@@ -1,7 +1,7 @@
 import threading
 import time
 from queue import Queue
-from typing import Optional
+from typing import Optional, Protocol
 
 import numpy as np
 from brainflow.board_shim import BoardShim, BrainFlowError
@@ -11,6 +11,19 @@ from brainflow.data_filter import (
     DetrendOperations,
     FilterTypes,
 )
+
+
+class StreamerProtocol(Protocol):
+    queue: Queue[np.ndarray]
+
+    def start(self) -> None:
+        ...
+
+    def request_stop(self) -> None:
+        ...
+
+    def close(self) -> None:
+        ...
 
 
 class BrainFlowStreamer:
@@ -107,3 +120,72 @@ class BrainFlowStreamer:
                 self._board.release_session()
             except BrainFlowError as err:
                 logger.warning("Failed to release BrainFlow session: {}", err)
+
+
+class MockEEGStreamer:
+    """Background thread that feeds simulated EEG data into a queue for the UI."""
+
+    def __init__(
+        self,
+        num_channels: int,
+        buffer_size: int,
+        poll_interval: float,
+        sampling_rate: float = 250.0,
+        noise_scale: float = 5.0,
+    ) -> None:
+        self._num_channels = num_channels
+        self._buffer_size = buffer_size
+        self._poll_interval = poll_interval
+        self._sampling_rate = sampling_rate
+        self._noise_scale = noise_scale
+        self.queue: Queue[np.ndarray] = Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._rng = np.random.default_rng()
+        self._sample_index = 0
+        self._base_frequencies = np.linspace(8.0, 15.0, num_channels)
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+
+        def _run() -> None:
+            logger.info("Mock EEG streaming thread started.")
+            while not self._stop_event.is_set():
+                chunk = self._generate_chunk()
+                self.queue.put(chunk)
+                time.sleep(self._poll_interval)
+            logger.info("Mock EEG streaming thread stopped.")
+
+        self._thread = threading.Thread(
+            target=_run, name="MockEEGStreamer", daemon=True
+        )
+        self._thread.start()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def close(self) -> None:
+        self.request_stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    @property
+    def num_channels(self) -> int:
+        return self._num_channels
+
+    def _generate_chunk(self) -> np.ndarray:
+        t = (
+            np.arange(self._buffer_size, dtype=np.float64) + self._sample_index
+        ) / self._sampling_rate
+        self._sample_index += self._buffer_size
+
+        signals = []
+        for idx, freq in enumerate(self._base_frequencies):
+            phase = idx * np.pi / 4
+            amplitude = 40.0 + 5.0 * idx
+            baseline = 10.0 * np.sin(2 * np.pi * 1.0 * t)
+            alpha_wave = amplitude * np.sin(2 * np.pi * freq * t + phase)
+            noise = self._rng.normal(0.0, self._noise_scale, size=self._buffer_size)
+            signals.append(alpha_wave + baseline + noise)
+        return np.vstack(signals)

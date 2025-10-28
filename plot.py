@@ -41,11 +41,11 @@ class ChannelLinePlot(Static):
         if self._ylim is not None:
             y_min, y_max = -self._ylim, self._ylim
         else:
-            # robust: median ± 8 * MAD (≈ ~±6.0σ for Gaussian when using 1.4826 * MAD)
+            # Autoscaling by median and median absolute deviation.
             med = float(np.median(y)) if y.size else 0.0
             mad = float(np.median(np.abs(y - med))) if y.size else 0.0
             robust_sigma = 1.4826 * mad
-            pad = max(10.0, 8.0 * robust_sigma)  # ensure at least ±10 µV visible
+            pad = max(10.0, 4.0 * robust_sigma)  # ensure at least ±10 µV visible
             y_min, y_max = med - pad, med + pad
             if y_min == y_max:
                 y_min, y_max = med - 1.0, med + 1.0
@@ -55,7 +55,7 @@ class ChannelLinePlot(Static):
         plt.clear_figure()
         plt.title(self._name)
         plt.ylabel("µV")
-        plt.plot(y.tolist())  # x = sample index
+        plt.plot(y.tolist(), marker="braille")  # x = sample index
         plt.ylim(y_min, y_max)
         plt.xlim(max(0, len(y) - len(self._buffer)), len(y) - 1)
 

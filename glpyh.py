@@ -18,7 +18,7 @@ from textual.containers import Grid
 from textual.timer import Timer
 from textual.widgets import Footer, Header
 
-from streamer import BrainFlowStreamer
+from streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
 from utils import create_board, detect_serial_port
 from plot import ChannelLinePlot
 
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--refresh-interval",
         type=float,
-        default=0.1,
+        default=0.025,
         help="Seconds between UI refreshes (default: 0.1).",
     )
     parser.add_argument(
@@ -64,6 +64,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="If set, fix y-limits to ±this many µV (e.g., 100). Otherwise uses robust auto-scale.",
+    )
+    parser.add_argument(
+        "--mock-eeg",
+        action="store_true",
+        help="Use simulated EEG data instead of connecting to a BrainFlow-compatible board.",
     )
     return parser.parse_args()
 
@@ -79,12 +84,13 @@ class OpenBCIApp(App):
     #plots {
         layout: grid;
         grid-size: 4;
-        grid-gutter: 1 2;
-        padding: 1;
+        grid-gutter: 0;
+        padding: 0;
     }
     .channel-plot {
         border: round $surface;
-        padding: 1;
+        padding: 0;
+        margin: 0;
     }
     .channel-title { text-style: bold; }
     .channel-latest { color: $accent; }
@@ -93,6 +99,8 @@ class OpenBCIApp(App):
     PlotextPlot {
         width: 100%;
         height: 14;
+        padding: 0;
+        margin: 0;
     }
     """
 
@@ -100,7 +108,7 @@ class OpenBCIApp(App):
 
     def __init__(
         self,
-        streamer: BrainFlowStreamer,
+        streamer: StreamerProtocol,
         channel_indices: List[int],
         channel_names: List[str],
         window_size: int,
@@ -171,22 +179,33 @@ class OpenBCIApp(App):
 
 def main() -> int:
     args = parse_args()
-    BoardShim.enable_dev_board_logger()
-
-    serial_port = args.serial_port or detect_serial_port()
-    if serial_port is None:
-        return 2
 
     board: Optional[BoardShim] = None
-    streamer: Optional[BrainFlowStreamer] = None
+    streamer: Optional[StreamerProtocol] = None
 
     try:
-        board = create_board(serial_port)
-        board_id = board.get_board_id()
-        channel_indices = BoardShim.get_eeg_channels(board_id)
-        channel_names = [f"EEG-{i + 1}" for i in range(len(channel_indices))]
+        if args.mock_eeg:
+            num_channels = 16
+            channel_indices = list(range(num_channels))
+            channel_names = [f"Mock-EEG-{i + 1}" for i in range(num_channels)]
+            streamer = MockEEGStreamer(
+                num_channels=num_channels,
+                buffer_size=args.buffer_size,
+                poll_interval=args.poll_interval,
+            )
+        else:
+            BoardShim.enable_dev_board_logger()
+            serial_port = args.serial_port or detect_serial_port()
+            if serial_port is None:
+                return 2
 
-        streamer = BrainFlowStreamer(board, args.buffer_size, args.poll_interval)
+            board = create_board(serial_port)
+            board_id = board.get_board_id()
+            channel_indices = BoardShim.get_eeg_channels(board_id)
+            channel_names = [f"EEG-{i + 1}" for i in range(len(channel_indices))]
+
+            streamer = BrainFlowStreamer(board, args.buffer_size, args.poll_interval)
+
         app = OpenBCIApp(
             streamer=streamer,
             channel_indices=channel_indices,
