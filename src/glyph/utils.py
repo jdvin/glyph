@@ -1,6 +1,5 @@
 from typing import Iterable, Optional
 
-
 from brainflow.board_shim import (
     BoardIds,
     BoardShim,

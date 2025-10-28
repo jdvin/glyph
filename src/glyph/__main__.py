@@ -16,11 +16,11 @@ from loguru import logger
 from textual.app import App, ComposeResult
 from textual.containers import Grid
 from textual.timer import Timer
-from textual.widgets import Footer, Header
+from textual.widgets import Footer, Header, TabPane, TabbedContent
 
-from streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
-from utils import create_board, detect_serial_port
-from plot import ChannelLinePlot
+from .plot import ChannelLinePlot
+from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
+from .utils import create_board, detect_serial_port
 
 
 def parse_args() -> argparse.Namespace:
@@ -129,9 +129,13 @@ class OpenBCIApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Grid(id="plots"):
-            for plot in self._plots:
-                yield plot
+        with TabbedContent():
+            with TabPane("Time Series"):
+                with Grid(id="plots"):
+                    for plot in self._plots:
+                        yield plot
+            with TabPane("Channel Map"):
+                yield ...
         yield Footer()
 
     async def on_mount(self) -> None:

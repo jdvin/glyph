@@ -64,3 +64,31 @@ class ChannelLinePlot(Static):
 
         # Ask Textual to redraw this widget
         self._plot.refresh(layout=True)
+
+
+class ChannelMap(Static):
+    """Simple ASCII topographic map with labels."""
+
+    def __init__(self, positions: dict[str, tuple[float, float]]):
+        super().__init__()
+        self.positions = positions  # {'Fp1':(-0.8,0.9), ...}
+        self.values = {ch: 0.0 for ch in positions}
+
+    def update_values(self, values: dict[str, float]):
+        self.values.update(values)
+        self.refresh(layout=True)
+
+    def render(self) -> str:
+        h, w = 20, 40
+        canvas = [[" "] * w for _ in range(h)]
+        for ch, (x, y) in self.positions.items():
+            # normalize −1→1 to screen coordinates
+            i = int((1 - y) * (h - 1) / 2)
+            j = int((x + 1) * (w - 1) / 2)
+            amp = abs(self.values.get(ch, 0))
+            mark = "." if amp < 20 else "o" if amp < 100 else "O"
+            label = f"{ch}{mark}"
+            for k, c in enumerate(label):
+                if 0 <= j + k < w:
+                    canvas[i][j + k] = c
+        return "\n".join("".join(row) for row in canvas)
