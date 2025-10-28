@@ -1,0 +1,7 @@
+{
+  "buffer_size": 256,
+  "poll_interval": 0.05,
+  "window_size": 512,
+  "refresh_interval": 0.025,
+  "ylim": null
+}

@@ -20,7 +20,7 @@ from textual.widgets import Footer, Header, TabPane, TabbedContent
 
 from .plot import ChannelLinePlot
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
-from .utils import create_board, detect_serial_port
+from .utils import AppConfig, create_board, detect_serial_port, load_app_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,36 +34,6 @@ def parse_args() -> argparse.Namespace:
             "Serial device for the Cyton-Daisy board "
             "(e.g., /dev/tty.usbserial-XXXX on macOS or COM3 on Windows)."
         ),
-    )
-    parser.add_argument(
-        "--buffer-size",
-        type=int,
-        default=256,
-        help="Number of samples per channel fetched on each read (default: 256).",
-    )
-    parser.add_argument(
-        "--poll-interval",
-        type=float,
-        default=0.05,
-        help="Seconds to wait between board reads when no data is returned (default: 0.05).",
-    )
-    parser.add_argument(
-        "--window-size",
-        type=int,
-        default=512,
-        help="Number of recent samples to display per channel (default: 512).",
-    )
-    parser.add_argument(
-        "--refresh-interval",
-        type=float,
-        default=0.025,
-        help="Seconds between UI refreshes (default: 0.1).",
-    )
-    parser.add_argument(
-        "--ylim",
-        type=float,
-        default=None,
-        help="If set, fix y-limits to ±this many µV (e.g., 100). Otherwise uses robust auto-scale.",
     )
     parser.add_argument(
         "--mock-eeg",
@@ -184,6 +154,12 @@ class OpenBCIApp(App):
 def main() -> int:
     args = parse_args()
 
+    try:
+        config: AppConfig = load_app_config()
+    except ValueError as err:
+        logger.error("Invalid configuration: {}", err)
+        return 1
+
     board: Optional[BoardShim] = None
     streamer: Optional[StreamerProtocol] = None
 
@@ -194,8 +170,8 @@ def main() -> int:
             channel_names = [f"Mock-EEG-{i + 1}" for i in range(num_channels)]
             streamer = MockEEGStreamer(
                 num_channels=num_channels,
-                buffer_size=args.buffer_size,
-                poll_interval=args.poll_interval,
+                buffer_size=config.buffer_size,
+                poll_interval=config.poll_interval,
             )
         else:
             BoardShim.enable_dev_board_logger()
@@ -208,15 +184,15 @@ def main() -> int:
             channel_indices = BoardShim.get_eeg_channels(board_id)
             channel_names = [f"EEG-{i + 1}" for i in range(len(channel_indices))]
 
-            streamer = BrainFlowStreamer(board, args.buffer_size, args.poll_interval)
+            streamer = BrainFlowStreamer(board, config.buffer_size, config.poll_interval)
 
         app = OpenBCIApp(
             streamer=streamer,
             channel_indices=channel_indices,
             channel_names=channel_names,
-            window_size=args.window_size,
-            refresh_interval=args.refresh_interval,
-            ylim_uv=args.ylim,
+            window_size=config.window_size,
+            refresh_interval=config.refresh_interval,
+            ylim_uv=config.ylim,
         )
         app.run()
     except KeyboardInterrupt:

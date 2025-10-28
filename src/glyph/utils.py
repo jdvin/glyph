@@ -1,4 +1,8 @@
-from typing import Iterable, Optional
+import json
+from dataclasses import dataclass
+from importlib import resources
+from pathlib import Path
+from typing import Any, Iterable, Optional
 
 from brainflow.board_shim import (
     BoardIds,
@@ -7,6 +11,60 @@ from brainflow.board_shim import (
 )
 from loguru import logger
 from serial.tools import list_ports
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    buffer_size: int
+    poll_interval: float
+    window_size: int
+    refresh_interval: float
+    ylim: Optional[float]
+
+
+def load_app_config(config_path: Optional[str] = None) -> AppConfig:
+    """Load application configuration from JSON."""
+    if config_path:
+        path = Path(config_path).expanduser()
+        with path.open("r", encoding="utf-8") as file:
+            config_data = json.load(file)
+        logger.info("Loaded configuration overrides from {}", path)
+    else:
+        resource = resources.files("glyph.config").joinpath("defaults.json")
+        with resource.open("r", encoding="utf-8") as file:
+            config_data = json.load(file)
+        logger.debug("Loaded bundled configuration defaults.")
+
+    return _parse_config(config_data)
+
+
+def _parse_config(config_data: dict[str, Any]) -> AppConfig:
+    try:
+        buffer_size = int(config_data["buffer_size"])
+        poll_interval = float(config_data["poll_interval"])
+        window_size = int(config_data["window_size"])
+        refresh_interval = float(config_data["refresh_interval"])
+    except KeyError as missing:
+        raise ValueError(f"Missing required config key: {missing.args[0]!s}") from missing
+    except (TypeError, ValueError) as err:
+        raise ValueError("Invalid numeric value in configuration.") from err
+
+    ylim_value = config_data.get("ylim", None)
+    if ylim_value is None:
+        ylim: Optional[float] = None
+    else:
+        try:
+            ylim = float(ylim_value)
+        except (TypeError, ValueError) as err:
+            raise ValueError("Config value 'ylim' must be numeric or null.") from err
+
+    return AppConfig(
+        buffer_size=buffer_size,
+        poll_interval=poll_interval,
+        window_size=window_size,
+        refresh_interval=refresh_interval,
+        ylim=ylim,
+    )
 
 
 def create_board(port: str) -> BoardShim:
