@@ -1,0 +1,13 @@
+[project]
+name = "glyph"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "brainflow>=5.19.0",
+    "loguru>=0.7.3",
+    "numpy>=2.2.6",
+    "pyserial>=3.5",
+    "textual-plotext>=1.0.1",
+]
