@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "brainflow>=5.19.0",
     "loguru>=0.7.3",
+    "mne>=1.10.2",
     "numpy>=2.2.6",
     "pyserial>=3.5",
     "textual-plotext>=1.0.1",
@@ -25,6 +26,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+glyph = ["config/*.json"]
 
 [tool.uv.sources]
 wavelet = { path = "../wavelet" }

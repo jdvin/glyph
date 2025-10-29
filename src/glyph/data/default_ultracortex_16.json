@@ -1,0 +1,85 @@
+{
+  "reference_system": "standard_1005",
+  "channel_map": [
+    {
+      "index": 0,
+      "board_label": "C1",
+      "reference_label": "Fp1"
+    },
+    {
+      "index": 1,
+      "board_label": "C2",
+      "reference_label": "Fp2"
+    },
+    {
+      "index": 2,
+      "board_label": "C3",
+      "reference_label": "C3"
+    },
+    {
+      "index": 3,
+      "board_label": "C4",
+      "reference_label": "C4"
+    },
+    {
+      "index": 4,
+      "board_label": "C5",
+      "reference_label": "P7"
+    },
+    {
+      "index": 5,
+      "board_label": "C6",
+      "reference_label": "P8"
+    },
+    {
+      "index": 6,
+      "board_label": "C7",
+      "reference_label": "O1"
+    },
+    {
+      "index": 7,
+      "board_label": "C8",
+      "reference_label": "O2"
+    },
+    {
+      "index": 8,
+      "board_label": "D1",
+      "reference_label": "F7"
+    },
+    {
+      "index": 9,
+      "board_label": "D2",
+      "reference_label": "F8"
+    },
+    {
+      "index": 10,
+      "board_label": "D3",
+      "reference_label": "F3"
+    },
+    {
+      "index": 11,
+      "board_label": "D4",
+      "reference_label": "F4"
+    },
+    {
+      "index": 12,
+      "board_label": "D5",
+      "reference_label": "T7"
+    },
+    {
+      "index": 13,
+      "board_label": "D6",
+      "reference_label": "T8"
+    },
+    {
+      "index": 14,
+      "board_label": "D7",
+      "reference_label": "P3"
+    },
+    {
+      "index": 15,
+      "board_label": "D8",
+      "reference_label": "P4"
+    }
+  ]
+}

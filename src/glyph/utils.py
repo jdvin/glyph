@@ -1,6 +1,7 @@
-import json
 from dataclasses import dataclass
 from importlib import resources
+import json
+import os
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -20,6 +21,31 @@ class AppConfig:
     window_size: int
     refresh_interval: float
     ylim: Optional[float]
+    montage_path: str
+
+
+@dataclass(frozen=True)
+class Channel:
+    index: int
+    board_label: str
+    reference_label: str
+
+
+@dataclass(frozen=True)
+class Montage:
+    reference_system: str
+    channel_map: list[Channel]
+
+    @classmethod
+    def from_json(cls, path: str) -> "Montage":
+        with open(
+            os.path.join("src", "glyph", "data", path), "r", encoding="utf-8"
+        ) as file:
+            config_data = json.load(file)
+        reference_system = config_data["reference_system"]
+        assert reference_system in ("standard_1020", "standard_1005")
+        channel_map = [Channel(**channel) for channel in config_data["channel_map"]]
+        return cls(reference_system=reference_system, channel_map=channel_map)
 
 
 def load_app_config(config_path: Optional[str] = None) -> AppConfig:
@@ -44,8 +70,11 @@ def _parse_config(config_data: dict[str, Any]) -> AppConfig:
         poll_interval = float(config_data["poll_interval"])
         window_size = int(config_data["window_size"])
         refresh_interval = float(config_data["refresh_interval"])
+        montage_path = config_data["montage_path"]
     except KeyError as missing:
-        raise ValueError(f"Missing required config key: {missing.args[0]!s}") from missing
+        raise ValueError(
+            f"Missing required config key: {missing.args[0]!s}"
+        ) from missing
     except (TypeError, ValueError) as err:
         raise ValueError("Invalid numeric value in configuration.") from err
 
@@ -64,6 +93,7 @@ def _parse_config(config_data: dict[str, Any]) -> AppConfig:
         window_size=window_size,
         refresh_interval=refresh_interval,
         ylim=ylim,
+        montage_path=montage_path,
     )
 
 

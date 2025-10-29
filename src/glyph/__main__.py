@@ -14,13 +14,13 @@ from brainflow.board_shim import (
 )
 from loguru import logger
 from textual.app import App, ComposeResult
-from textual.containers import Grid
+from textual.containers import CenterMiddle, Grid
 from textual.timer import Timer
 from textual.widgets import Footer, Header, TabPane, TabbedContent
 
-from .plot import ChannelLinePlot
+from .plot import ChannelLinePlot, ChannelMap
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
-from .utils import AppConfig, create_board, detect_serial_port, load_app_config
+from .utils import AppConfig, Montage, create_board, detect_serial_port, load_app_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-class OpenBCIApp(App):
+class Glyph(App):
     """Textual application that renders live EEG line graphs."""
 
     CSS = """
@@ -51,7 +51,7 @@ class OpenBCIApp(App):
     Header { dock: top; }
     Footer { dock: bottom; }
 
-    #plots {
+    #timeseries{
         layout: grid;
         grid-size: 4;
         grid-gutter: 0;
@@ -83,29 +83,34 @@ class OpenBCIApp(App):
         channel_names: List[str],
         window_size: int,
         refresh_interval: float,
+        montage: Montage,
         ylim_uv: Optional[float],
     ) -> None:
         super().__init__()
         self._streamer = streamer
         self._channel_indices = channel_indices
         self._channel_names = channel_names
+        self._montage = montage
         self._refresh_interval = refresh_interval
         self._ylim_uv = ylim_uv
-        self._plots = [
+        self._timeseries = [
             ChannelLinePlot(name, window_size, ylim_uv=self._ylim_uv)
             for name in self._channel_names
         ]
+        self._channel_map = ChannelMap(montage)
         self._refresh_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with TabbedContent():
-            with TabPane("Time Series"):
-                with Grid(id="plots"):
-                    for plot in self._plots:
-                        yield plot
             with TabPane("Channel Map"):
-                yield ...
+                with CenterMiddle(id="channel-map"):
+                    yield self._channel_map
+            with TabPane("Time Series"):
+                with Grid(id="timeseries"):
+                    for plot in self._timeseries:
+                        yield plot
+
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -140,7 +145,9 @@ class OpenBCIApp(App):
         # Do NOT apply an additional scale factor here.
 
         for idx, row in enumerate(eeg_data):
-            self._plots[idx].extend(row.tolist())
+            self._timeseries[idx].extend(row.tolist())
+
+        self._channel_map.update_values(eeg_data[:, -1].tolist())
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
@@ -164,10 +171,11 @@ def main() -> int:
     streamer: Optional[StreamerProtocol] = None
 
     try:
+        montage = Montage.from_json(config.montage_path)
+        channel_indices = [channel.index for channel in montage.channel_map]
+        channel_names = [channel.reference_label for channel in montage.channel_map]
         if args.mock_eeg:
-            num_channels = 16
-            channel_indices = list(range(num_channels))
-            channel_names = [f"Mock-EEG-{i + 1}" for i in range(num_channels)]
+            num_channels = len(montage.channel_map)
             streamer = MockEEGStreamer(
                 num_channels=num_channels,
                 buffer_size=config.buffer_size,
@@ -181,18 +189,24 @@ def main() -> int:
 
             board = create_board(serial_port)
             board_id = board.get_board_id()
-            channel_indices = BoardShim.get_eeg_channels(board_id)
-            channel_names = [f"EEG-{i + 1}" for i in range(len(channel_indices))]
+            assert all(
+                conf_ch_idx == board_ch_idx
+                for conf_ch_idx, board_ch_idx in zip(
+                    channel_indices, BoardShim.get_eeg_channels(board_id)
+                )
+            )
+            streamer = BrainFlowStreamer(
+                board, config.buffer_size, config.poll_interval
+            )
 
-            streamer = BrainFlowStreamer(board, config.buffer_size, config.poll_interval)
-
-        app = OpenBCIApp(
+        app = Glyph(
             streamer=streamer,
             channel_indices=channel_indices,
             channel_names=channel_names,
             window_size=config.window_size,
             refresh_interval=config.refresh_interval,
             ylim_uv=config.ylim,
+            montage=montage,
         )
         app.run()
     except KeyboardInterrupt:
