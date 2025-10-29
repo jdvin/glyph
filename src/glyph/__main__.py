@@ -18,7 +18,7 @@ from textual.containers import CenterMiddle, Grid
 from textual.timer import Timer
 from textual.widgets import Footer, Header, TabPane, TabbedContent
 
-from .plot import ChannelLinePlot, ChannelMap
+from .plot import ChannelLinePlot, ChannelMap, GlyphicMap
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
 from .utils import AppConfig, Montage, create_board, detect_serial_port, load_app_config
 
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
 
 
 class Glyph(App):
-    """Textual application that renders live EEG line graphs."""
+    """Textual application that renders live EEG."""
 
     CSS = """
     Screen { layout: vertical; }
@@ -66,7 +66,7 @@ class Glyph(App):
     .channel-latest { color: $accent; }
 
     /* Make each plot reasonably tall for detail */
-    PlotextPlot {
+    PlotextPlot  #channelplot {
         width: 100%;
         height: 14;
         padding: 0;
@@ -97,7 +97,7 @@ class Glyph(App):
             ChannelLinePlot(name, window_size, ylim_uv=self._ylim_uv)
             for name in self._channel_names
         ]
-        self._channel_map = ChannelMap(montage)
+        self._channel_map = GlyphicMap(montage)
         self._refresh_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
@@ -110,7 +110,6 @@ class Glyph(App):
                 with Grid(id="timeseries"):
                     for plot in self._timeseries:
                         yield plot
-
         yield Footer()
 
     async def on_mount(self) -> None:

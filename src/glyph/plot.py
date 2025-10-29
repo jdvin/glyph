@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from typing import Iterable, Optional
 
 import mne
@@ -8,7 +9,7 @@ import numpy as np
 from textual_plotext import PlotextPlot
 from textual.widgets import Label, Static
 
-# from wavelet.spatial_tools import project_3d_to_2d
+from wavelet.spatial_tools import project_3d_to_2d
 from textual.app import ComposeResult
 
 from glyph.utils import Montage
@@ -24,7 +25,7 @@ class ChannelLinePlot(Static):
         self._ylim = float(ylim_uv) if ylim_uv is not None else None
 
         self._title = Label(name, classes="channel-title")
-        self._plot = PlotextPlot(id=f"plot-{name}")
+        self._plot = PlotextPlot(id="channelplot")
         self._latest = Label("—", classes="channel-latest")
 
     def compose(self) -> ComposeResult:
@@ -70,60 +71,47 @@ class ChannelLinePlot(Static):
         self._plot.refresh(layout=True)
 
 
-def project_3d_to_2d(
-    ch_pos_3d: np.ndarray,
-    sphere: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.095),
-    eeglab: bool = False,
-) -> np.ndarray:
-    """
-    Convert 3D EEG electrode positions into 2D topomap coordinates.
+# dot bit positions for braille (Unicode U+2800)
+# layout: 2 columns x 4 rows → bits [0..7]
+_BRAILLE_BITS = np.array([[0, 3], [1, 4], [2, 5], [6, 7]], dtype=np.uint8)  # rows
 
-    Parameters
-    ----------
-    ch_pos_3d :np.ndarray
-        (x, y, z) in meters.
-    sphere : tuple of (x, y, z, r)
-        Center (x, y, z) and radius of the reference sphere.
-        Use MNE's defaults: (0, 0, 0, 0.095) ≈ head radius 9.5 cm.
-    eeglab : bool
-        If True, use EEGLAB-style polar projection (slightly spreads rim electrodes).
-        If False, use MNE's default orthographic / azimuthal projection.
 
-    Returns
-    -------
-    np.ndarray
-        (x2d, y2d)
-    """
-    sphere_center = np.array(sphere[:3], float)
-    sphere_radius = float(sphere[3])
-    coords_2d = np.zeros((len(ch_pos_3d), 2))
-    # breakpoint()
-    for i, xyz in enumerate(ch_pos_3d):
-        # center and normalize to unit sphere
-        xyz = np.asarray(xyz, float) - sphere_center
-        r = np.linalg.norm(xyz)
-        if r == 0:
-            coords_2d[i] = np.zeros(2)
-            continue
-        xyz /= r
+def braille_heatmap(Z: np.ndarray, vmin=None, vmax=None, levels=4) -> list[str]:
+    """Return list of text lines representing Z as a braille heatmap."""
+    Z = np.asarray(Z, float)
+    if vmin is None or vmax is None:
+        med = np.median(Z)
+        mad = np.median(np.abs(Z - med)) or 1e-9
+        k = 4.0
+        vmin, vmax = med - k * 1.4826 * mad, med + k * 1.4826 * mad
+    Zn = np.clip((Z - vmin) / (vmax - vmin), 0, 1)
 
-        x, y, z = xyz
-        # spherical coordinates
-        azimuth = np.arctan2(y, x)  # −π..π
-        elevation = np.arcsin(z)  # −π/2..π/2
+    # Downsample to multiples of 4 rows, 2 cols
+    H, W = Zn.shape
+    h = H - (H % 4)
+    w = W - (W % 2)
+    Zr = Zn[:h, :w]
 
-        if eeglab:
-            # EEGLAB uses radius ∝ (π/2 − elevation)/(π/2)
-            radius = (np.pi / 2 - elevation) / (np.pi / 2)
-        else:
-            # MNE default: radius ∝ cos(elevation)
-            radius = np.cos(elevation)
+    # Quantize to [0..levels] and set a dot if cell value > threshold
+    q = (Zr * levels).astype(np.uint8)
 
-        x2d = radius * np.cos(azimuth)
-        y2d = radius * np.sin(azimuth)
-        coords_2d[i] = np.array([x2d, y2d])
-
-    return coords_2d
+    rows = []
+    for r in range(0, h, 4):
+        line_chars = []
+        block = q[r : r + 4, :]  # (4, w)
+        for c in range(0, w, 2):
+            cell = block[:, c : c + 2]  # (4,2)
+            # build 8-bit pattern by thresholding each of the 8 positions
+            bits = 0
+            for rr in range(4):
+                for cc in range(2):
+                    # turn on dot if that subcell is nonzero
+                    if cell[rr, cc] > 0:
+                        bits |= 1 << _BRAILLE_BITS[rr, cc]
+            ch = chr(0x2800 + bits)
+            line_chars.append(ch)
+        rows.append("".join(line_chars))
+    return rows
 
 
 class ChannelMap(Static):
@@ -144,20 +132,26 @@ class ChannelMap(Static):
         )
 
         self.values = [0.0 for ch in self.positions]
+        self._plot = PlotextPlot()
+
+    def compose(self) -> ComposeResult:
+        yield self._plot
 
     def update_values(self, values: list[float]):
         self.values = values
         self.refresh(layout=True)
 
     def render(self) -> str:
-        h, w = 50, 150
+        h, w = 50, 50
+        h_pad = h // 10
+        w_pad = w // 10
         canvas = [[" "] * w for _ in range(h)]
         for ch, amp, (x, y) in zip(
             self.montage.channel_map, self.values, self.positions
         ):
             # normalize −1→1 to screen coordinates
-            i = int((1 - y) * (h - 1) / 2)
-            j = int((x + 1) * (w - 1) / 2)
+            i = int((1 - y) * ((h - h_pad) - 1) / 2)
+            j = int((x + 1) * ((w - w_pad) - 1) / 2)
             amp = abs(amp)
             mark = "." if amp < 20 else "o" if amp < 100 else "O"
             label = f"{mark} - {ch.board_label}|{ch.reference_label}"
@@ -165,3 +159,178 @@ class ChannelMap(Static):
                 if 0 <= j + k < w:
                     canvas[i][j + k] = c
         return "\n".join("".join(row) for row in canvas)
+
+
+def idw_grid(
+    samples_xy: np.ndarray,
+    samples_val: np.ndarray,
+    grid_x: np.ndarray,
+    grid_y: np.ndarray,
+    power: float = 2.0,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """
+    Inverse-Distance Weighting (IDW) onto a grid (no SciPy).
+    samples_xy: (N,2) in [-1,1]x[-1,1]
+    samples_val: (N,)
+    grid_x, grid_y: meshgrid arrays (H,W)
+    """
+    N = samples_xy.shape[0]
+    H, W = grid_x.shape
+    Z = np.zeros((H, W), float)
+
+    # Flatten grid for vectorized distances
+    gx = grid_x.ravel()
+    gy = grid_y.ravel()
+    Zf = np.zeros_like(gx)
+    wsum = np.zeros_like(gx)
+    for i in range(N):
+        dx = gx - samples_xy[i, 0]
+        dy = gy - samples_xy[i, 1]
+        d2 = dx * dx + dy * dy
+        w = 1.0 / np.maximum(d2, eps) ** (power / 2.0)
+        Zf += w * samples_val[i]
+        if i == 0:
+            wsum = w.copy()
+        else:
+            wsum += w
+    Z = (Zf / np.maximum(wsum, eps)).reshape(H, W)
+    return Z
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The widget: Plotext underlay + electrode labels on top
+# ──────────────────────────────────────────────────────────────────────────────
+@dataclass
+class ElectrodeStyle:
+    cmap: str = "plasma"  # plotext colormap name (fallback handled)
+    radius: float = 0.98  # draw a head circle at this radius
+    label_color: str = "white"
+    label_shift: tuple[float, float] = (0.0, 0.0)  # nudge labels (dx, dy)
+    show_head_circle: bool = True
+
+
+class GlyphicMap(Static):
+    """
+    A Textual widget that draws a 2-D electrode map with a plotext underlay
+    (heatmap via IDW or scatter), and labels per electrode.
+
+    Positions must be in 2-D (range roughly [-1, 1]). Use `project_3d_to_2d`
+    beforehand if you start from 3-D coordinates.
+
+    Methods:
+      - update_values({name: value})  # feed values for the underlay
+      - set_positions({name: (x, y)}) # replace/update coordinates
+      - set_labels_visible(bool)
+    """
+
+    DEFAULT_CSS = """
+    GlyphicMap #mapplot {
+        height: 50;   /* tweak in your app */
+        width: 33%;
+    }
+    """
+
+    def __init__(
+        self,
+        montage: Montage,
+        grid_size: tuple[int, int] = (40, 20),  # (W, H) for heatmap
+        style: ElectrodeStyle = ElectrodeStyle(),
+        title: Optional[str] = "Electrode Map",
+    ):
+        super().__init__()
+        self._plot = PlotextPlot(id="mapplot")
+        self._montage = montage  # {'Fp1':(-0.8,0.9), ...}
+        self._ch_names = [ch.reference_label for ch in montage.channel_map]
+        self._ch_labels = [
+            f"{ch.board_label}|{ch.reference_label}" for ch in montage.channel_map
+        ]
+        ch_positions = mne.channels.make_standard_montage(
+            montage.reference_system
+        ).get_positions()["ch_pos"]
+        pos3d = np.vstack([ch_positions[name] for name in self._ch_names])
+        self._positions = project_3d_to_2d(
+            pos3d,
+            sphere=(0.0, 0.01, 0.0, 0.0),
+        )
+        self._values = np.zeros(len(self._positions))
+
+        self._grid_w, self._grid_h = grid_size
+        self._style = style
+        self._title = title
+        self._show_labels = True
+
+    def compose(self):
+        yield self._plot
+
+    def update_values(self, values: np.ndarray):
+        self.values = values
+        self._redraw()
+        self.refresh(layout=True)
+
+    # ── internals ────────────────────────────────────────────────────────────
+    def _norm_xy(self, xy: np.ndarray) -> np.ndarray:
+        """Ensure coords live in a gently padded [-1,1] box."""
+        return np.clip(xy, -1.0, 1.0)
+
+    def _build_underlay(self, plt):
+        # Grid in [-1,1] × [-1,1] (Y first because imshow expects matrix rows as Y)
+        gx = np.linspace(-1.0, 1.0, self._grid_w)
+        gy = np.linspace(-1.0, 1.0, self._grid_h)
+        Gx, Gy = np.meshgrid(gx, gy)
+
+        # Inverse-distance interpolation for smooth underlay
+        Z = idw_grid(self._positions, self._values, Gx, Gy, power=2.0)
+
+        # Normalize to 0..1 for coloring; robust against outliers
+        med = float(np.median(Z))
+        mad = float(np.median(np.abs(Z - med))) + 1e-9
+        Zn = 0.5 + 0.25 * (Z - med) / (1.4826 * mad)  # clamp to ~[0,1]
+        Zn = np.clip(Zn, 0.0, 1.0)
+
+        flatx, flaty, flatz = Gx.ravel(), Gy.ravel(), Zn.ravel()
+        plt.scatter(flatx.tolist(), flaty.tolist(), color=flatz.tolist(), marker="·")
+        plt.xlim(-1, 1)
+        plt.ylim(-1, 1)
+
+        # Optional head outline
+        if self._style.show_head_circle:
+            th = np.linspace(0, 2 * np.pi, 360)
+            rx = self._style.radius * np.sin(th)
+            ry = self._style.radius * np.cos(th)
+            plt.plot(rx.tolist(), ry.tolist())
+
+    def _overlay_labels(self, plt):
+        dx, dy = self._style.label_shift
+        for label, xy in zip(self._ch_labels, self._positions):
+            x, y = self._norm_xy(xy)
+            if self._show_labels:
+                plt.text(
+                    label,
+                    float(x + dx),
+                    float(y + dy),  # color=self._style.label_color
+                )
+            else:
+                # small dot when labels off
+                plt.scatter([x], [y], marker="·", color=self._style.label_color)
+
+    def on_show(self) -> None:
+        # initial draw
+        self._redraw()
+
+    def _redraw(self):
+        plt = self._plot.plt
+        plt.clear_figure()
+        if self._title:
+            plt.title(self._title)
+        # plt.hide_grid()
+        # plt.hide_axes()
+
+        self._build_underlay(plt)
+        self._overlay_labels(plt)
+
+        # keep coordinate frame consistent
+        plt.xlim(-1, 1)
+        plt.ylim(-1, 1)
+
+        self._plot.refresh(layout=True)
