@@ -91,7 +91,7 @@ class ChannelLinePlot(Static):
             med = float(np.median(y)) if y.size else 0.0
             mad = float(np.median(np.abs(y - med))) if y.size else 0.0
             robust_sigma = 1.4826 * mad
-            pad = max(10.0, 4.0 * robust_sigma)  # ensure at least ±10 µV visible
+            pad = max(10.0, 2.0 * robust_sigma)  # ensure at least ±10 µV visible
             y_min, y_max = med - pad, med + pad
             if y_min == y_max:
                 y_min, y_max = med - 1.0, med + 1.0
@@ -265,13 +265,6 @@ class GlyphicMap(Static):
       - set_labels_visible(bool)
     """
 
-    DEFAULT_CSS = """
-    GlyphicMap #mapplot {
-        height: 50;   /* tweak in your app */
-        width: 33%;
-    }
-    """
-
     def __init__(
         self,
         montage: Montage,
@@ -280,7 +273,7 @@ class GlyphicMap(Static):
         title: Optional[str] = "Electrode Map",
     ):
         super().__init__()
-        self._plot = PlotextPlot(id="mapplot")
+        self._plot = PlotextPlot(id="map-plot")
         self._montage = montage  # {'Fp1':(-0.8,0.9), ...}
         self._ch_names = [ch.reference_label for ch in montage.channel_map]
         self._ch_labels = [
