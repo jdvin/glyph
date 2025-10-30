@@ -8,11 +8,52 @@ import mne
 import numpy as np
 from textual_plotext import PlotextPlot
 from textual.widgets import Label, Static
-
+import matplotlib.cm as cm
 from wavelet.spatial_tools import project_3d_to_2d
 from textual.app import ComposeResult
 
 from glyph.utils import Montage
+
+
+def rgb_to_ansi_index(rgb: np.ndarray) -> list[int]:
+    """
+    Map an RGB triplet in [0,1] to the nearest 256-color ANSI index.
+    """
+    # Clamp input
+    rgb = np.clip(rgb, 0, 1).round().astype(int)
+
+    # Scale to 0..5 cube coordinates
+    cube_index = 16 + 36 * rgb[:, 0] + 6 * rgb[:, 1] + rgb[:, 2]
+
+    # # Compute approximate brightness
+    # gray = 232 + int(round((r + g + b) / 3 * 23))
+
+    # # Pick whichever (cube or grayscale) is closer in Euclidean RGB distance
+    # def ansi_rgb(idx: int):
+    #     if 16 <= idx <= 231:
+    #         i = idx - 16
+    #         r6, g6, b6 = i // 36, (i // 6) % 6, i % 6
+    #         return np.array([r6, g6, b6]) / 5.0
+    #     if 232 <= idx <= 255:
+    #         v = (idx - 232) / 23.0
+    #         return np.array([v, v, v])
+    #     return np.zeros(3)
+
+    # rgb_in = np.array([r, g, b])
+    # diff_cube = np.linalg.norm(rgb_in - ansi_rgb(cube_index))
+    # diff_gray = np.linalg.norm(rgb_in - ansi_rgb(gray))
+
+    return cube_index.tolist()  # if diff_cube <= diff_gray else gray
+
+
+def norm_to_ansi_index(z: float | np.ndarray, cmap: str = "plasma") -> int | list[int]:
+    """Map a normalized value to a color using a colormap."""
+    if isinstance(z, float):
+        z = np.array([z])
+    rgb_ = cm.get_cmap(cmap)(z)
+    assert isinstance(rgb_, np.ndarray)
+    ansi = rgb_to_ansi_index(rgb_)
+    return ansi[0] if len(ansi) == 1 else ansi
 
 
 class ChannelLinePlot(Static):
@@ -259,19 +300,28 @@ class GlyphicMap(Static):
         self._style = style
         self._title = title
         self._show_labels = True
+        self.off = 0.01
 
     def compose(self):
         yield self._plot
 
     def update_values(self, values: np.ndarray):
-        self.values = values
+        self._values = self._norm_z(values)
         self._redraw()
-        self.refresh(layout=True)
 
     # ── internals ────────────────────────────────────────────────────────────
     def _norm_xy(self, xy: np.ndarray) -> np.ndarray:
         """Ensure coords live in a gently padded [-1,1] box."""
         return np.clip(xy, -1.0, 1.0)
+
+    def _norm_z(self, z: np.ndarray) -> np.ndarray:
+        """Normalize to 0..1 for coloring; robust against outliers."""
+        # Normalize to 0..1 for coloring; robust against outliers
+        med = float(np.median(z))
+        mad = float(np.median(np.abs(z - med))) + 1e-9
+        Zn = 0.5 + 0.25 * (z - med) / (1.4826 * mad)  # clamp to ~[0,1]
+        Zn = np.clip(Zn, 0.0, 1.0)
+        return Zn
 
     def _build_underlay(self, plt):
         # Grid in [-1,1] × [-1,1] (Y first because imshow expects matrix rows as Y)
@@ -280,16 +330,10 @@ class GlyphicMap(Static):
         Gx, Gy = np.meshgrid(gx, gy)
 
         # Inverse-distance interpolation for smooth underlay
-        Z = idw_grid(self._positions, self._values, Gx, Gy, power=2.0)
-
-        # Normalize to 0..1 for coloring; robust against outliers
-        med = float(np.median(Z))
-        mad = float(np.median(np.abs(Z - med))) + 1e-9
-        Zn = 0.5 + 0.25 * (Z - med) / (1.4826 * mad)  # clamp to ~[0,1]
-        Zn = np.clip(Zn, 0.0, 1.0)
-
+        Zn = idw_grid(self._positions, self._values, Gx, Gy, power=3.0)
         flatx, flaty, flatz = Gx.ravel(), Gy.ravel(), Zn.ravel()
-        plt.scatter(flatx.tolist(), flaty.tolist(), color=flatz.tolist(), marker="·")
+        clrs = norm_to_ansi_index(flatz, self._style.cmap)
+        plt.scatter(flatx.tolist(), flaty.tolist(), color=clrs, marker="■")
         plt.xlim(-1, 1)
         plt.ylim(-1, 1)
 
@@ -302,13 +346,15 @@ class GlyphicMap(Static):
 
     def _overlay_labels(self, plt):
         dx, dy = self._style.label_shift
-        for label, xy in zip(self._ch_labels, self._positions):
+        for label, xy, value in zip(self._ch_labels, self._positions, self._values):
             x, y = self._norm_xy(xy)
+            color = norm_to_ansi_index(value, self._style.cmap)
             if self._show_labels:
                 plt.text(
                     label,
                     float(x + dx),
-                    float(y + dy),  # color=self._style.label_color
+                    float(y + dy),
+                    color=color,
                 )
             else:
                 # small dot when labels off

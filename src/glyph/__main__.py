@@ -141,12 +141,12 @@ class Glyph(App):
         eeg_data = combined[self._channel_indices, :]
 
         # IMPORTANT: For OpenBCI via BrainFlow, EXG channels are already in µV.
-        # Do NOT apply an additional scale factor here.
 
         for idx, row in enumerate(eeg_data):
             self._timeseries[idx].extend(row.tolist())
+        import random
 
-        self._channel_map.update_values(eeg_data[:, -1].tolist())
+        self._channel_map.update_values(eeg_data[:, -1] * random.random())
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
