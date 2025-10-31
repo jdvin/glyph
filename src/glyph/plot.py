@@ -91,6 +91,37 @@ class ChannelLinePlot(Static):
         # Ask Textual to redraw this widget
         self._plot.refresh(layout=True)
 
+    def set_ylim(self, ylim_uv: Optional[float]) -> None:
+        """Update y-axis limit and redraw using the current buffer."""
+        self._ylim = float(ylim_uv) if ylim_uv is not None else None
+        # Redraw from current buffer
+        y = np.asarray(self._buffer, dtype=float)
+        plt = self._plot.plt
+        plt.clear_figure()
+        plt.title(self._name)
+        plt.ylabel("µV")
+        if y.size:
+            plt.plot(y.tolist(), marker="braille")
+        # Choose y-limits
+        if self._ylim is not None:
+            y_min, y_max = -self._ylim, self._ylim
+        else:
+            if y.size:
+                med = float(np.median(y))
+                mad = float(np.median(np.abs(y - med)))
+                robust_sigma = 1.4826 * mad
+                pad = max(10.0, 4.0 * robust_sigma)
+                y_min, y_max = med - pad, med + pad
+                if y_min == y_max:
+                    y_min, y_max = med - 1.0, med + 1.0
+            else:
+                y_min, y_max = -1.0, 1.0
+        plt.ylim(y_min, y_max)
+        if y.size:
+            plt.xlim(max(0, len(y) - len(self._buffer)), len(y) - 1)
+            self._latest.update(f"{y[-1]: .2f} µV")
+        self._plot.refresh(layout=True)
+
 
 def idw_grid(
     samples_xy: np.ndarray,
