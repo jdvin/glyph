@@ -252,8 +252,6 @@ class GlyphicMap(Static):
         plt.clear_figure()
         if self._title:
             plt.title(self._title)
-        # plt.hide_grid()
-        # plt.hide_axes()
 
         self._build_underlay(plt)
         self._overlay_labels(plt)
