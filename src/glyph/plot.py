@@ -21,29 +21,9 @@ def rgb_to_ansi_index(rgb: np.ndarray) -> list[int]:
     """
     # Clamp input
     rgb = np.clip(rgb, 0, 1).round().astype(int)
-
     # Scale to 0..5 cube coordinates
     cube_index = 16 + 36 * rgb[:, 0] + 6 * rgb[:, 1] + rgb[:, 2]
-
-    # # Compute approximate brightness
-    # gray = 232 + int(round((r + g + b) / 3 * 23))
-
-    # # Pick whichever (cube or grayscale) is closer in Euclidean RGB distance
-    # def ansi_rgb(idx: int):
-    #     if 16 <= idx <= 231:
-    #         i = idx - 16
-    #         r6, g6, b6 = i // 36, (i // 6) % 6, i % 6
-    #         return np.array([r6, g6, b6]) / 5.0
-    #     if 232 <= idx <= 255:
-    #         v = (idx - 232) / 23.0
-    #         return np.array([v, v, v])
-    #     return np.zeros(3)
-
-    # rgb_in = np.array([r, g, b])
-    # diff_cube = np.linalg.norm(rgb_in - ansi_rgb(cube_index))
-    # diff_gray = np.linalg.norm(rgb_in - ansi_rgb(gray))
-
-    return cube_index.tolist()  # if diff_cube <= diff_gray else gray
+    return cube_index.tolist()
 
 
 def norm_to_ansi_index(z: float | np.ndarray, cmap: str = "plasma") -> int | list[int]:
@@ -109,6 +89,37 @@ class ChannelLinePlot(Static):
         self._latest.update(f"{new_values[-1]: .2f} µV")
 
         # Ask Textual to redraw this widget
+        self._plot.refresh(layout=True)
+
+    def set_ylim(self, ylim_uv: Optional[float]) -> None:
+        """Update y-axis limit and redraw using the current buffer."""
+        self._ylim = float(ylim_uv) if ylim_uv is not None else None
+        # Redraw from current buffer
+        y = np.asarray(self._buffer, dtype=float)
+        plt = self._plot.plt
+        plt.clear_figure()
+        plt.title(self._name)
+        plt.ylabel("µV")
+        if y.size:
+            plt.plot(y.tolist(), marker="braille")
+        # Choose y-limits
+        if self._ylim is not None:
+            y_min, y_max = -self._ylim, self._ylim
+        else:
+            if y.size:
+                med = float(np.median(y))
+                mad = float(np.median(np.abs(y - med)))
+                robust_sigma = 1.4826 * mad
+                pad = max(10.0, 4.0 * robust_sigma)
+                y_min, y_max = med - pad, med + pad
+                if y_min == y_max:
+                    y_min, y_max = med - 1.0, med + 1.0
+            else:
+                y_min, y_max = -1.0, 1.0
+        plt.ylim(y_min, y_max)
+        if y.size:
+            plt.xlim(max(0, len(y) - len(self._buffer)), len(y) - 1)
+            self._latest.update(f"{y[-1]: .2f} µV")
         self._plot.refresh(layout=True)
 
 

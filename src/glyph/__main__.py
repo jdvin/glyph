@@ -18,7 +18,7 @@ from loguru import logger
 from textual.app import App, ComposeResult
 from textual.containers import CenterMiddle, Grid, Container
 from textual.timer import Timer
-from textual.widgets import Footer, Header, TabPane, TabbedContent, Static
+from textual.widgets import Footer, Header, TabPane, TabbedContent, Static, Select
 
 from .plot import ChannelLinePlot, GlyphicMap
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
@@ -144,7 +144,6 @@ class Glyph(App):
         window_size: int,
         refresh_interval: float,
         montage: Montage,
-        ylim_uv: Optional[float],
         board_details: BoardDetails,
     ) -> None:
         super().__init__()
@@ -153,7 +152,7 @@ class Glyph(App):
         self._channel_names = channel_names
         self._montage = montage
         self._refresh_interval = refresh_interval
-        self._ylim_uv = ylim_uv
+        self._ylim_uv = None
         self._board_details = board_details
         self._timeseries = [
             ChannelLinePlot(name, window_size, ylim_uv=self._ylim_uv)
@@ -174,6 +173,17 @@ class Glyph(App):
                     yield self._channel_map
                     yield self._board_panel
             with TabPane("Time Series"):
+                # Y-limit selector above the plots
+                yield Select(
+                    options=[
+                        ("200 µV", "200"),
+                        ("100 µV", "100"),
+                        ("50 µV", "50"),
+                        ("Auto", "auto"),
+                    ],
+                    value=("auto" if self._ylim_uv is None else str(int(self._ylim_uv))),
+                    id="ylim-select",
+                )
                 with Grid(id="timeseries"):
                     for plot in self._timeseries:
                         yield plot
@@ -222,6 +232,22 @@ class Glyph(App):
 
     def action_quit(self) -> None:
         self.exit()
+
+    def on_select_changed(self, event: Select.Changed) -> None:  # type: ignore[name-defined]
+        """Update y-limits for all time series plots when dropdown changes."""
+        if getattr(event.select, "id", None) != "ylim-select":
+            return
+        value = event.value
+        if value == "auto":
+            new_ylim: Optional[float] = None
+        else:
+            try:
+                new_ylim = float(value)
+            except (TypeError, ValueError):
+                new_ylim = None
+        self._ylim_uv = new_ylim
+        for plot in self._timeseries:
+            plot.set_ylim(new_ylim)
 
 
 def main() -> int:
@@ -289,7 +315,6 @@ def main() -> int:
             channel_names=channel_names,
             window_size=config.window_size,
             refresh_interval=config.refresh_interval,
-            ylim_uv=config.ylim,
             montage=montage,
             board_details=board_details,
         )

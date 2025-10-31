@@ -16,14 +16,11 @@ from brainflow.data_filter import (
 class StreamerProtocol(Protocol):
     queue: Queue[np.ndarray]
 
-    def start(self) -> None:
-        ...
+    def start(self) -> None: ...
 
-    def request_stop(self) -> None:
-        ...
+    def request_stop(self) -> None: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class BrainFlowStreamer:
@@ -130,7 +127,7 @@ class MockEEGStreamer:
         num_channels: int,
         buffer_size: int,
         poll_interval: float,
-        sampling_rate: float = 250.0,
+        sampling_rate: float = 125.0,
         noise_scale: float = 5.0,
     ) -> None:
         self._num_channels = num_channels
@@ -175,12 +172,10 @@ class MockEEGStreamer:
         return self._num_channels
 
     def _generate_chunk(self) -> np.ndarray:
-        t = (
-            np.arange(self._buffer_size, dtype=np.float64) + self._sample_index
-        ) / self._sampling_rate
+        buffer_index = np.arange(self._buffer_size, dtype=np.float64)
+        t = (buffer_index + self._sample_index) / self._sampling_rate
         self._sample_index += self._buffer_size
-
-        signals = []
+        signals = [buffer_index]
         for idx, freq in enumerate(self._base_frequencies):
             phase = idx * np.pi / 4
             amplitude = 40.0 + 5.0 * idx
