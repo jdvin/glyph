@@ -85,6 +85,46 @@ class BoardDetailsPanel(Static):
         return "\n".join(lines)
 
 
+class HealthMetricsPanel(Static):
+    """Left-side panel listing per-channel health metrics."""
+
+    def __init__(self, channel_names: List[str]) -> None:
+        super().__init__(id="health-metrics")
+        self._channel_names = channel_names
+        self._last_text = ""
+
+    def on_mount(self) -> None:
+        self.update("Health Metrics\nWaiting for sufficient data…")
+
+    def update_metrics(self, scores, flags) -> None:
+        lines = ["Health Metrics", ""]
+        for name, score, info in zip(self._channel_names, scores, flags):
+            reasons = info.get("reasons", ["ok"])
+            # show top 1–2 reasons for brevity
+            reason_text = ", ".join(reasons[:2])
+            lines.append(f"{name:>4}: {score:5.1f}  {reason_text}")
+        text = "\n".join(lines)
+        if text != self._last_text:
+            self._last_text = text
+            self.update(text)
+
+    def update_waiting(self, seconds_filled: float, seconds_total: float) -> None:
+        pct = (
+            0.0
+            if seconds_total <= 0
+            else max(0.0, min(100.0, 100.0 * seconds_filled / seconds_total))
+        )
+        lines = [
+            "Health Metrics",
+            "",
+            f"Filling buffer: {seconds_filled:0.1f} / {seconds_total:0.1f} s ({pct:0.0f}%)",
+        ]
+        text = "\n".join(lines)
+        if text != self._last_text:
+            self._last_text = text
+            self.update(text)
+
+
 def _format_board_name(board_id: int) -> str:
     try:
         enum_name = BoardIds(board_id).name
@@ -103,7 +143,7 @@ class Glyph(App):
 
     #channel-map {
         layout: grid;
-        grid-size: 2;            /* two columns */
+        grid-size: 3;            /* add left metrics column */
         grid-gutter: 1;
         padding: 1 2;
     }
@@ -159,6 +199,7 @@ class Glyph(App):
             for name in self._channel_names
         ]
         self._channel_map = GlyphicMap(montage)
+        self._health_panel = HealthMetricsPanel(self._channel_names)
         self._board_panel = BoardDetailsPanel(board_details)
         self._refresh_timer: Optional[Timer] = None
 
@@ -166,12 +207,10 @@ class Glyph(App):
         yield Header(show_clock=True)
         with TabbedContent():
             with TabPane("Channel Map"):
-                # with CenterMiddle(
-                #     id="channel-map"
-                # ):  # TODO: figure out why this is not working
                 with Container(id="channel-map"):
-                    yield self._channel_map
                     yield self._board_panel
+                    yield self._channel_map
+                    yield self._health_panel
             with TabPane("Time Series"):
                 # Y-limit selector above the plots
                 yield Select(
@@ -181,7 +220,9 @@ class Glyph(App):
                         ("50 µV", "50"),
                         ("Auto", "auto"),
                     ],
-                    value=("auto" if self._ylim_uv is None else str(int(self._ylim_uv))),
+                    value=(
+                        "auto" if self._ylim_uv is None else str(int(self._ylim_uv))
+                    ),
                     id="ylim-select",
                 )
                 with Grid(id="timeseries"):
@@ -221,9 +262,25 @@ class Glyph(App):
 
         for idx, row in enumerate(eeg_data):
             self._timeseries[idx].extend(row.tolist())
-        import random
 
-        self._channel_map.update_values(eeg_data[:, -1] * random.random())
+        # Update health metrics panel; show waiting progress until ready.
+        scores = np.zeros(len(self._channel_names), dtype=int)
+        try:
+            hm = self._streamer.health_metrics
+            if hm.ready():
+                scores, flags = hm.compute()
+                self._health_panel.update_metrics(scores, flags)
+            else:
+                seconds_filled = getattr(hm, "filled", 0) / max(
+                    1.0, getattr(hm, "fs", 1.0)
+                )
+                seconds_total = float(getattr(hm, "window_sec", 0.0))
+                self._health_panel.update_waiting(seconds_filled, seconds_total)
+        except Exception as e:
+            # Avoid crashing the UI if health computation fails
+            logger.debug(f"Health metrics update skipped: {e}")
+
+        self._channel_map.update_values(scores)
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
