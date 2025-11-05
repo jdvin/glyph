@@ -185,14 +185,14 @@ class GlyphicMap(Static):
         montage: Montage,
         grid_size: tuple[int, int] = (40, 20),  # (W, H) for heatmap
         style: ElectrodeStyle = ElectrodeStyle(),
-        title: Optional[str] = "Electrode Map",
+        title: Optional[str] = "Channel Map",
     ):
         super().__init__()
         self._plot = PlotextPlot(id="map-plot")
-        self._montage = montage  # {'Fp1':(-0.8,0.9), ...}
-        self._ch_names = [ch.reference_label for ch in montage.channel_map]
+        self._montage = montage
+        self._ch_names = [ch.reference_label for ch in montage.channels]
         self._ch_labels = [
-            f"{ch.board_label}|{ch.reference_label}" for ch in montage.channel_map
+            f"{ch.board_label}|{ch.reference_label}" for ch in montage.channels
         ]
         ch_positions = mne.channels.make_standard_montage(
             montage.reference_system
@@ -200,7 +200,7 @@ class GlyphicMap(Static):
         pos3d = np.vstack([ch_positions[name] for name in self._ch_names])
         self._positions = project_3d_to_2d(
             pos3d,
-            sphere=(0.0, 0.01, 0.0, 0.0),
+            sphere=(0.0, 0.0, 0.0, 0.0),
         )
         self._values = np.zeros(len(self._positions))
 

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from importlib import resources
+import inspect
 import json
+import mne
 import os
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -11,6 +13,7 @@ from brainflow.board_shim import (
     BrainFlowInputParams,
 )
 from loguru import logger
+import numpy as np
 from serial.tools import list_ports
 from torch import nn
 from torch.package.package_importer import PackageImporter
@@ -46,7 +49,7 @@ class Channel:
 @dataclass(frozen=True)
 class Montage:
     reference_system: str
-    channel_map: list[Channel]
+    channels: list[Channel]
 
     @classmethod
     def from_json(cls, path: str) -> "Montage":
@@ -56,8 +59,17 @@ class Montage:
             config_data = json.load(file)
         reference_system = config_data["reference_system"]
         assert reference_system in ("standard_1020", "standard_1005")
-        channel_map = [Channel(**channel) for channel in config_data["channel_map"]]
-        return cls(reference_system=reference_system, channel_map=channel_map)
+        channels = [Channel(**channel) for channel in config_data["channels"]]
+        return cls(reference_system=reference_system, channels=channels)
+
+    @property
+    def channel_positions(self) -> np.ndarray:
+        """Return a numpy array of channel positions."""
+        positions = getattr(self, "_positions", None)
+        if positions is None:
+            montage = mne.channels.make_standard_montage(self.reference_system)
+            positions = np.vstack([montage[ch.reference_label] for ch in self.channels])
+            self._positions = positions
 
 
 @dataclass
@@ -188,6 +200,13 @@ def format_board_name(board_id: int) -> str:
     except ValueError:
         return f"Board {board_id}"
     return enum_name.replace("_", " ").title()
+
+
+def describe_function(func):
+    """Return a string containing a function's signature and docstring."""
+    sig = str(inspect.signature(func))
+    doc = inspect.getdoc(func) or "(no docstring)"
+    return f"{func.__name__}{sig}\n\n{doc}"
 
 
 def load_model(model_loader_config: ModelLoaderConfig) -> nn.Module:

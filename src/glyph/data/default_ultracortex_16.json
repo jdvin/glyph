@@ -1,6 +1,6 @@
 {
   "reference_system": "standard_1005",
-  "channel_map": [
+  "channels": [
     {
       "index": 1,
       "board_label": "C1",

@@ -18,6 +18,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Grid, Container
 from textual.timer import Timer
 from textual.widgets import Footer, Header, TabPane, TabbedContent, Select
+import torch
 
 from .plot import (
     ChannelLinePlot,
@@ -197,7 +198,9 @@ class Glyph(App):
 
         combined = np.concatenate(chunks, axis=1)
 
-        # BrainFlow returns a [num_channels x num_samples] array.
+        # BrainFlow returns a [num_channels + 3 x num_samples] array.
+        # Index 0 is a sample index.
+        # Indexes num_channels + [2-4] are accelerometer data.
         eeg_data = combined[self._channel_indices, :]
 
         # IMPORTANT: For OpenBCI via BrainFlow, EXG channels are already in µV.
@@ -223,6 +226,14 @@ class Glyph(App):
             logger.debug(f"Health metrics update skipped: {e}")
 
         self._channel_map.update_values(scores)
+
+        channel_signals = torch.tensor(eeg_data)
+        channel_positions = self._montage.channel_positions
+        sequence_positions = ...
+        task_keys = ...
+        labels = ...
+        channel_mask = None
+        samples_mask = None
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
