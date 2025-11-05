@@ -4,25 +4,40 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
 from queue import Empty
 from typing import List, Optional
+import json
 
 import numpy as np
 from brainflow.board_shim import (
     BoardShim,
     BrainFlowError,
-    BoardIds,
 )
 from loguru import logger
 from textual.app import App, ComposeResult
-from textual.containers import CenterMiddle, Grid, Container
+from textual.containers import Grid, Container
 from textual.timer import Timer
-from textual.widgets import Footer, Header, TabPane, TabbedContent, Static, Select
+from textual.widgets import Footer, Header, TabPane, TabbedContent, Select
 
-from .plot import ChannelLinePlot, GlyphicMap
+from .plot import (
+    ChannelLinePlot,
+    GlyphicMap,
+    BoardDetailsPanel,
+    HealthMetricsPanel,
+    BoardDetails,
+    ModelDetailsPanel,
+)
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
-from .utils import AppConfig, Montage, create_board, detect_serial_port, load_app_config
+from .utils import (
+    AppConfig,
+    ModelLoaderConfig,
+    Montage,
+    create_board,
+    detect_serial_port,
+    load_app_config,
+    format_board_name,
+    load_model,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,95 +57,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use simulated EEG data instead of connecting to a BrainFlow-compatible board.",
     )
+    parser.add_argument(
+        "--model-loader-config-path",
+        default=None,
+        help="Path to a JSON file containing the model loader config.",
+    )
     return parser.parse_args()
-
-
-@dataclass(frozen=True)
-class BoardDetails:
-    source: str
-    name: str
-    board_id: Optional[int]
-    sampling_rate_hz: Optional[float]
-    eeg_channel_count: Optional[int]
-    serial_port: Optional[str] = None
-
-
-class BoardDetailsPanel(Static):
-    """Simple text panel summarizing board metadata."""
-
-    def __init__(self, details: BoardDetails) -> None:
-        super().__init__(id="board-details")
-        self._details = details
-
-    def on_mount(self) -> None:
-        self.update(self._render_text())
-
-    def update_details(self, details: BoardDetails) -> None:
-        self._details = details
-        self.update(self._render_text())
-
-    def _render_text(self) -> str:
-        details = self._details
-        lines = ["Board Info", ""]
-        lines.append(f"Source: {details.source}")
-        lines.append(f"Name: {details.name}")
-        if details.board_id is not None:
-            lines.append(f"Board ID: {details.board_id}")
-        if details.serial_port:
-            lines.append(f"Serial Port: {details.serial_port}")
-        if details.sampling_rate_hz is not None:
-            lines.append(f"Sampling Rate: {details.sampling_rate_hz:.0f} Hz")
-        if details.eeg_channel_count is not None:
-            lines.append(f"EEG Channels: {details.eeg_channel_count}")
-        return "\n".join(lines)
-
-
-class HealthMetricsPanel(Static):
-    """Left-side panel listing per-channel health metrics."""
-
-    def __init__(self, channel_names: List[str]) -> None:
-        super().__init__(id="health-metrics")
-        self._channel_names = channel_names
-        self._last_text = ""
-
-    def on_mount(self) -> None:
-        self.update("Health Metrics\nWaiting for sufficient data…")
-
-    def update_metrics(self, scores, flags) -> None:
-        lines = ["Health Metrics", ""]
-        for name, score, info in zip(self._channel_names, scores, flags):
-            reasons = info.get("reasons", ["ok"])
-            # show top 1–2 reasons for brevity
-            reason_text = ", ".join(reasons[:2])
-            lines.append(f"{name:>4}: {score:5.1f}  {reason_text}")
-        text = "\n".join(lines)
-        if text != self._last_text:
-            self._last_text = text
-            self.update(text)
-
-    def update_waiting(self, seconds_filled: float, seconds_total: float) -> None:
-        pct = (
-            0.0
-            if seconds_total <= 0
-            else max(0.0, min(100.0, 100.0 * seconds_filled / seconds_total))
-        )
-        lines = [
-            "Health Metrics",
-            "",
-            f"Filling buffer: {seconds_filled:0.1f} / {seconds_total:0.1f} s ({pct:0.0f}%)",
-        ]
-        text = "\n".join(lines)
-        if text != self._last_text:
-            self._last_text = text
-            self.update(text)
-
-
-def _format_board_name(board_id: int) -> str:
-    try:
-        enum_name = BoardIds(board_id).name
-    except ValueError:
-        return f"Board {board_id}"
-    return enum_name.replace("_", " ").title()
 
 
 class Glyph(App):
@@ -185,6 +117,7 @@ class Glyph(App):
         refresh_interval: float,
         montage: Montage,
         board_details: BoardDetails,
+        model_loader_config_path: str | None,
     ) -> None:
         super().__init__()
         self._streamer = streamer
@@ -202,6 +135,12 @@ class Glyph(App):
         self._health_panel = HealthMetricsPanel(self._channel_names)
         self._board_panel = BoardDetailsPanel(board_details)
         self._refresh_timer: Optional[Timer] = None
+        if model_loader_config_path:
+            logger.info("Loading model from {}", model_loader_config_path)
+            with open(model_loader_config_path, "r", encoding="utf-8") as file:
+                self._model_loader_config = ModelLoaderConfig(**json.load(file))
+            self.model = load_model(self._model_loader_config)
+        self._model_panel = ModelDetailsPanel(self.model)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -228,6 +167,9 @@ class Glyph(App):
                 with Grid(id="timeseries"):
                     for plot in self._timeseries:
                         yield plot
+            with TabPane("Model"):
+                with Container(id="model-details"):
+                    yield self._model_panel
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -358,7 +300,7 @@ def main() -> int:
             )
             board_details = BoardDetails(
                 source="BrainFlow",
-                name=_format_board_name(board_id),
+                name=format_board_name(board_id),
                 board_id=board_id,
                 sampling_rate_hz=float(sampling_rate),
                 eeg_channel_count=len(board_channels),
@@ -374,6 +316,7 @@ def main() -> int:
             refresh_interval=config.refresh_interval,
             montage=montage,
             board_details=board_details,
+            model_loader_config_path=args.model_loader_config_path,
         )
         app.run()
     except KeyboardInterrupt:

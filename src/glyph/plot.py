@@ -6,13 +6,14 @@ from typing import Iterable, Optional
 
 import mne
 import numpy as np
+from torch import nn
 from textual_plotext import PlotextPlot
 from textual.widgets import Label, Static
 import matplotlib.cm as cm
 from wavelet.spatial_tools import project_3d_to_2d
 from textual.app import ComposeResult
 
-from glyph.utils import Montage
+from glyph.utils import Montage, BoardDetails, ElectrodeStyle
 
 
 def rgb_to_ansi_index(rgb: np.ndarray) -> list[int]:
@@ -163,13 +164,6 @@ def idw_grid(
 # ──────────────────────────────────────────────────────────────────────────────
 # The widget: Plotext underlay + electrode labels on top
 # ──────────────────────────────────────────────────────────────────────────────
-@dataclass
-class ElectrodeStyle:
-    cmap: str = "plasma"  # plotext colormap name (fallback handled)
-    radius: float = 0.98  # draw a head circle at this radius
-    label_color: str = "white"
-    label_shift: tuple[float, float] = (0.0, 0.0)  # nudge labels (dx, dy)
-    show_head_circle: bool = True
 
 
 class GlyphicMap(Static):
@@ -292,3 +286,84 @@ class GlyphicMap(Static):
         plt.ylim(-1, 1)
 
         self._plot.refresh(layout=True)
+
+
+class BoardDetailsPanel(Static):
+    """Simple text panel summarizing board metadata."""
+
+    def __init__(self, details: BoardDetails) -> None:
+        super().__init__(id="board-details")
+        self._details = details
+
+    def on_mount(self) -> None:
+        self.update(self._render_text())
+
+    def _render_text(self) -> str:
+        details = self._details
+        lines = ["Board Info", ""]
+        lines.append(f"Source: {details.source}")
+        lines.append(f"Name: {details.name}")
+        if details.board_id is not None:
+            lines.append(f"Board ID: {details.board_id}")
+        if details.serial_port:
+            lines.append(f"Serial Port: {details.serial_port}")
+        if details.sampling_rate_hz is not None:
+            lines.append(f"Sampling Rate: {details.sampling_rate_hz:.0f} Hz")
+        if details.eeg_channel_count is not None:
+            lines.append(f"EEG Channels: {details.eeg_channel_count}")
+        return "\n".join(lines)
+
+
+class HealthMetricsPanel(Static):
+    """Left-side panel listing per-channel health metrics."""
+
+    def __init__(self, channel_names: list[str]) -> None:
+        super().__init__(id="health-metrics")
+        self._channel_names = channel_names
+        self._last_text = ""
+
+    def on_mount(self) -> None:
+        self.update("Health Metrics\nWaiting for sufficient data…")
+
+    def update_metrics(self, scores, flags) -> None:
+        lines = ["Health Metrics", ""]
+        for name, score, info in zip(self._channel_names, scores, flags):
+            reasons = info.get("reasons", ["ok"])
+            # show top 1–2 reasons for brevity
+            reason_text = ", ".join(reasons[:2])
+            lines.append(f"{name:>4}: {score:5.1f}  {reason_text}")
+        text = "\n".join(lines)
+        if text != self._last_text:
+            self._last_text = text
+            self.update(text)
+
+    def update_waiting(self, seconds_filled: float, seconds_total: float) -> None:
+        pct = (
+            0.0
+            if seconds_total <= 0
+            else max(0.0, min(100.0, 100.0 * seconds_filled / seconds_total))
+        )
+        lines = [
+            "Health Metrics",
+            "",
+            f"Filling buffer: {seconds_filled:0.1f} / {seconds_total:0.1f} s ({pct:0.0f}%)",
+        ]
+        text = "\n".join(lines)
+        if text != self._last_text:
+            self._last_text = text
+            self.update(text)
+
+
+class ModelDetailsPanel(Static):
+    """Panel listing model architecture."""
+
+    def __init__(self, model: nn.Module | None) -> None:
+        super().__init__(id="model-details")
+        self.model = model
+
+    def on_mount(self) -> None:
+        self.update(self._model_architecture_text)
+
+    @property
+    def _model_architecture_text(self) -> str:
+        return str(self.model) if self.model else "No model loaded."

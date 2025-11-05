@@ -12,6 +12,8 @@ from brainflow.board_shim import (
 )
 from loguru import logger
 from serial.tools import list_ports
+from torch import nn
+from torch.package.package_importer import PackageImporter
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,16 @@ class AppConfig:
     refresh_interval: float
     ylim: Optional[float]
     montage_path: str
+
+
+@dataclass(frozen=True)
+class BoardDetails:
+    source: str
+    name: str
+    board_id: Optional[int]
+    sampling_rate_hz: Optional[float]
+    eeg_channel_count: Optional[int]
+    serial_port: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +58,24 @@ class Montage:
         assert reference_system in ("standard_1020", "standard_1005")
         channel_map = [Channel(**channel) for channel in config_data["channel_map"]]
         return cls(reference_system=reference_system, channel_map=channel_map)
+
+
+@dataclass
+class ElectrodeStyle:
+    cmap: str = "plasma"  # plotext colormap name (fallback handled)
+    radius: float = 0.98  # draw a head circle at this radius
+    label_color: str = "white"
+    label_shift: tuple[float, float] = (0.0, 0.0)  # nudge labels (dx, dy)
+    show_head_circle: bool = True
+
+
+@dataclass(frozen=True)
+class ModelLoaderConfig:
+    """Configuration for a model."""
+
+    package_path: str
+    model_name: str
+    device: str
 
 
 def load_app_config(config_path: Optional[str] = None) -> AppConfig:
@@ -150,3 +180,29 @@ def detect_serial_port() -> Optional[str]:
         candidates[0].device,
     )
     return candidates[0].device
+
+
+def format_board_name(board_id: int) -> str:
+    try:
+        enum_name = BoardIds(board_id).name
+    except ValueError:
+        return f"Board {board_id}"
+    return enum_name.replace("_", " ").title()
+
+
+def load_model(model_loader_config: ModelLoaderConfig) -> nn.Module:
+    """Load a PyTorch model from a pytorch package."""
+
+    imp = PackageImporter(model_loader_config.package_path)
+    # Assumes module name is the model name in lower case.
+    model_module = f"src.{model_loader_config.model_name.lower()}"
+    Model = getattr(
+        imp.import_module(model_module),
+        model_loader_config.model_name,
+    )
+    state = imp.load_pickle("assets", "state.pkl")
+    model_config = imp.load_pickle("config", "model_config.pkl")
+    model = Model(model_config, rank=0, world_size=1).eval()
+    model.load_state_dict(state)
+    model.to(model_loader_config.device).eval()
+    return model

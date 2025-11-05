@@ -6,11 +6,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "brainflow>=5.19.0",
+    "einops>=0.8.1",
     "loguru>=0.7.3",
     "mne>=1.10.2",
     "numpy>=2.2.6",
     "pyserial>=3.5",
     "textual-plotext>=1.0.1",
+    "torch>=2.9.0",
     "wavelet",
 ]
 

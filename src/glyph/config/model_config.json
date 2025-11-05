@@ -1,0 +1,5 @@
+{
+  "package_path": "model_package.pkg",
+  "model_name": "MontageNet",
+  "device": "mps"
+}
