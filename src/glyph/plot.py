@@ -43,7 +43,8 @@ class ChannelLinePlot(Static):
     def __init__(self, name: str, max_samples: int, ylim_uv: Optional[float]) -> None:
         super().__init__(classes="channel-plot")
         self._name = name
-        self._buffer = deque(maxlen=max_samples)
+        self.max_samples = max_samples
+        self._buffer = np.zeros(max_samples, dtype=float)
         self._ylim = float(ylim_uv) if ylim_uv is not None else None
 
         self._title = Label(name, classes="channel-title")
@@ -55,22 +56,15 @@ class ChannelLinePlot(Static):
         yield self._plot
         yield self._latest
 
-    def extend(self, values: Iterable[float]) -> None:
-        # Append & plot
-        new_values = list(values)
-        if not new_values:
-            return
-        self._buffer.extend(new_values)
-
-        y = np.asarray(self._buffer, dtype=float)
-
+    def post(self, values: np.ndarray) -> None:
+        self._buffer = values
         # Choose y-limits
         if self._ylim is not None:
             y_min, y_max = -self._ylim, self._ylim
         else:
             # Autoscaling by median and median absolute deviation.
-            med = float(np.median(y)) if y.size else 0.0
-            mad = float(np.median(np.abs(y - med))) if y.size else 0.0
+            med = float(np.median(values)) if values.size else 0.0
+            mad = float(np.median(np.abs(values - med))) if values.size else 0.0
             robust_sigma = 1.4826 * mad
             pad = max(10.0, 2.0 * robust_sigma)  # ensure at least ±10 µV visible
             y_min, y_max = med - pad, med + pad
@@ -82,12 +76,12 @@ class ChannelLinePlot(Static):
         plt.clear_figure()
         plt.title(self._name)
         plt.ylabel("µV")
-        plt.plot(y.tolist(), marker="braille")  # x = sample index
+        plt.plot(values.tolist(), marker="braille")  # x = sample index
         plt.ylim(y_min, y_max)
-        plt.xlim(max(0, len(y) - len(self._buffer)), len(y) - 1)
+        plt.xlim(max(0, len(values) - len(self._buffer)), len(values) - 1)
 
         # Show latest sample (µV)
-        self._latest.update(f"{new_values[-1]: .2f} µV")
+        self._latest.update(f"{values[-1]: .2f} µV")
 
         # Ask Textual to redraw this widget
         self._plot.refresh(layout=True)

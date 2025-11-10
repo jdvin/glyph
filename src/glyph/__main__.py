@@ -18,7 +18,6 @@ from textual.app import App, ComposeResult
 from textual.containers import Grid, Container
 from textual.timer import Timer
 from textual.widgets import Footer, Header, TabPane, TabbedContent, Select
-import torch
 
 from .plot import (
     ChannelLinePlot,
@@ -185,55 +184,41 @@ class Glyph(App):
         )
 
     async def _refresh_plots(self) -> None:
-        chunks = []
-        while True:
-            try:
-                chunk = self._streamer.queue.get_nowait()
-            except Empty:
-                break
-            chunks.append(chunk)
-
-        if not chunks:
-            return
-
-        combined = np.concatenate(chunks, axis=1)
-
         # BrainFlow returns a [num_channels + 3 x num_samples] array.
         # Index 0 is a sample index.
         # Indexes num_channels + [2-4] are accelerometer data.
-        eeg_data = combined[self._channel_indices, :]
+        eeg_data = self._streamer.buffer.get_eeg()
 
         # IMPORTANT: For OpenBCI via BrainFlow, EXG channels are already in µV.
 
         for idx, row in enumerate(eeg_data):
-            self._timeseries[idx].extend(row.tolist())
+            self._timeseries[idx].post(row)
 
         # Update health metrics panel; show waiting progress until ready.
         scores = np.zeros(len(self._channel_names), dtype=int)
         try:
             hm = self._streamer.health_metrics
-            if hm.ready():
-                scores, flags = hm.compute()
+            buf = self._streamer.buffer
+            if buf.ready(hm.N):
+                scores, flags = hm.compute(buf)
                 self._health_panel.update_metrics(scores, flags)
             else:
-                seconds_filled = getattr(hm, "filled", 0) / max(
-                    1.0, getattr(hm, "fs", 1.0)
-                )
-                seconds_total = float(getattr(hm, "window_sec", 0.0))
-                self._health_panel.update_waiting(seconds_filled, seconds_total)
+                seconds_filled = buf.prop_filled(hm.N) / self._streamer.sampling_rate
+                self._health_panel.update_waiting(seconds_filled, hm.window_sec)
         except Exception as e:
             # Avoid crashing the UI if health computation fails
             logger.debug(f"Health metrics update skipped: {e}")
+            raise e
 
         self._channel_map.update_values(scores)
 
-        channel_signals = torch.tensor(eeg_data)
-        channel_positions = self._montage.channel_positions
-        sequence_positions = ...
-        task_keys = ...
-        labels = ...
-        channel_mask = None
-        samples_mask = None
+        # channel_signals = torch.tensor(eeg_data)
+        # channel_positions = self._montage.channel_positions
+        # sequence_positions = ...
+        # task_keys = ...
+        # labels = ...
+        # channel_mask = None
+        # samples_mask = None
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
@@ -269,17 +254,17 @@ def main() -> int:
         logger.error("Invalid configuration: {}", err)
         return 1
 
-    board: Optional[BoardShim] = None
-    streamer: Optional[StreamerProtocol] = None
-    board_details: Optional[BoardDetails] = None
+    board: BoardShim
+    streamer: StreamerProtocol
+    board_details: BoardDetails
 
     try:
         montage = Montage.from_json(config.montage_path)
-        channel_map_indices = [channel.index for channel in montage.channel_map]
-        channel_names = [channel.reference_label for channel in montage.channel_map]
+        channel_map_indices = [channel.index for channel in montage.channels]
+        channel_names = [channel.reference_label for channel in montage.channels]
         if args.mock_eeg:
-            num_channels = len(montage.channel_map)
-            mock_sampling_rate = 250.0
+            num_channels = len(montage.channels)
+            mock_sampling_rate = 250
             streamer = MockEEGStreamer(
                 num_channels=num_channels,
                 buffer_size=config.buffer_size,

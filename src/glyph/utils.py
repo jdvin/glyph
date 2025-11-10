@@ -46,10 +46,16 @@ class Channel:
     reference_label: str
 
 
-@dataclass(frozen=True)
 class Montage:
-    reference_system: str
-    channels: list[Channel]
+    def __init__(self, reference_system: str, channels: list[Channel]):
+        self.reference_system = reference_system
+        self.channels = channels
+        montage = mne.channels.make_standard_montage(
+            self.reference_system
+        ).get_positions()["ch_pos"]
+        self.channel_positions = np.vstack([
+            montage[ch.reference_label] for ch in self.channels
+        ])
 
     @classmethod
     def from_json(cls, path: str) -> "Montage":
@@ -61,15 +67,6 @@ class Montage:
         assert reference_system in ("standard_1020", "standard_1005")
         channels = [Channel(**channel) for channel in config_data["channels"]]
         return cls(reference_system=reference_system, channels=channels)
-
-    @property
-    def channel_positions(self) -> np.ndarray:
-        """Return a numpy array of channel positions."""
-        positions = getattr(self, "_positions", None)
-        if positions is None:
-            montage = mne.channels.make_standard_montage(self.reference_system)
-            positions = np.vstack([montage[ch.reference_label] for ch in self.channels])
-            self._positions = positions
 
 
 @dataclass

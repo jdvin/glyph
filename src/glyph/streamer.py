@@ -1,6 +1,6 @@
+import os
 import threading
 import time
-from queue import Queue
 from typing import Optional, Protocol
 
 import numpy as np
@@ -11,6 +11,70 @@ from brainflow.data_filter import (
     DetrendOperations,
     FilterTypes,
 )
+
+
+def _fatal_daemon_failure(streamer_name: str, exc: BaseException) -> None:
+    """Log and hard-exit when a streaming daemon dies."""
+    logger.opt(exception=exc).critical(
+        "{} streaming daemon crashed; terminating process.", streamer_name
+    )
+    os._exit(1)
+
+
+class ChannelDataBuffer:
+    def __init__(self, num_channels: int, eeg_channels: list[int], buffer_size: int):
+        self.num_channels = num_channels
+        self.eeg_channels = eeg_channels
+        self.buffer_size = buffer_size
+        self.buffer = np.zeros((num_channels, buffer_size), dtype=np.float64)
+        self.filled = 0
+
+    def push(self, chunk: np.ndarray):
+        assert (
+            chunk.ndim == 2 and chunk.shape[0] == self.num_channels
+        ), f"Expected (C,T) shape, got {chunk.shape}"
+        T = chunk.shape[1]
+        if T >= self.buffer_size:
+            self.buffer[:, :] = chunk[:, -self.buffer_size :]
+            self.filled = self.buffer_size
+        else:
+            keep = max(0, self.buffer_size - T)
+            if self.filled < self.buffer_size:
+                # fill up from the left with zeros until buffer is full
+                pad = self.buffer_size - self.filled
+                if T >= pad:
+                    # shift existing
+                    self.buffer[:, :-T] = self.buffer[:, T:]
+                    self.buffer[:, -T:] = chunk
+                    self.filled = min(self.buffer_size, self.filled + T)
+                else:
+                    # write into the rightmost T; no shift needed yet
+                    self.buffer[
+                        :,
+                        self.buffer_size - self.filled - T : self.buffer_size
+                        - self.filled,
+                    ] = 0.0
+                    self.buffer[
+                        :, -self.filled - T : -self.filled if self.filled else None
+                    ] = chunk
+                    self.filled += T
+            else:
+                # steady-state: shift left, append new chunk
+                self.buffer[:, :keep] = self.buffer[:, -keep:]
+                self.buffer[:, -T:] = chunk
+                self.filled = self.buffer_size
+
+    def ready(self, T: int | None = None) -> bool:
+        return self.prop_filled(T) == 1
+
+    def prop_filled(self, T: int | None = None) -> float:
+        return self.filled / (T or self.buffer_size)
+
+    def get(self, T: int | None = None) -> np.ndarray:
+        return self.buffer[:, -(T or self.buffer_size) :].copy()
+
+    def get_eeg(self, T: int | None = None) -> np.ndarray:
+        return self.get(T)[self.eeg_channels, :]
 
 
 class ChannelHealthMeter:
@@ -51,10 +115,6 @@ class ChannelHealthMeter:
         self.z_outlier_hi = float(z_outlier_hi)
         self.rail_weight = float(rail_weight)
 
-        # Rolling buffer (last N samples). Simple shift-based buffer for clarity.
-        self.buf = np.zeros((self.C, self.N), dtype=np.float64)
-        self.filled = 0
-
         # Optional aux metrics you can pass in (from your own detectors)
         self._adc_rail_pct = None  # shape (C,), 0..100
         self._plot_rail_pct = None  # shape (C,), 0..100
@@ -78,62 +138,19 @@ class ChannelHealthMeter:
 
     # ---------- streaming API ----------
 
-    def push(self, chunk_uv: np.ndarray, adc_rail_pct=None, plot_rail_pct=None):
-        """
-        Append a chunk in µV: shape (C, T). Keeps only last N samples.
-        Optionally include railed percentages (0..100) for extra penalties.
-        """
-        assert (
-            chunk_uv.ndim == 2 and chunk_uv.shape[0] == self.C
-        ), f"Expected (C,T) shape, got {chunk_uv.shape}"
-        T = chunk_uv.shape[1]
-        if T >= self.N:
-            self.buf[:] = chunk_uv[:, -self.N :]
-            self.filled = self.N
-        else:
-            keep = max(0, self.N - T)
-            if self.filled < self.N:
-                # fill up from the left with zeros until buffer is full
-                pad = self.N - self.filled
-                if T >= pad:
-                    # shift existing
-                    self.buf[:, :-T] = self.buf[:, T:]
-                    self.buf[:, -T:] = chunk_uv
-                    self.filled = min(self.N, self.filled + T)
-                else:
-                    # write into the rightmost T; no shift needed yet
-                    self.buf[:, self.N - self.filled - T : self.N - self.filled] = 0.0
-                    self.buf[
-                        :, -self.filled - T : -self.filled if self.filled else None
-                    ] = chunk_uv
-                    self.filled += T
-            else:
-                # steady-state: shift left, append new chunk
-                self.buf[:, :keep] = self.buf[:, -keep:]
-                self.buf[:, -T:] = chunk_uv
-                self.filled = self.N
-
-        if adc_rail_pct is not None:
-            self._adc_rail_pct = np.asarray(adc_rail_pct, dtype=float)
-        if plot_rail_pct is not None:
-            self._plot_rail_pct = np.asarray(plot_rail_pct, dtype=float)
-
-    def ready(self) -> bool:
-        return self.filled == self.N
-
-    def compute(self):
+    def compute(self, buffer: ChannelDataBuffer) -> tuple[np.ndarray, list[dict]]:
         """
         Returns:
           scores  : (C,) float in [0,100]
           flags   : list of dicts per channel with metrics & human-readable reasons
         """
-        if not self.ready():
+        if not buffer.ready(self.N):
             # Not enough data yet; return neutral
             return np.full(self.C, 100.0), [
                 {"reasons": ["warming_up"], "metrics": {}} for _ in range(self.C)
             ]
 
-        X = self.buf.copy()
+        X = buffer.get(self.N)
 
         # ---- time-domain prelims ----
         X -= X.mean(axis=1, keepdims=True)  # detrend (remove DC)
@@ -250,17 +267,15 @@ class ChannelHealthMeter:
 
 
 class StreamerProtocol(Protocol):
-    queue: Queue[np.ndarray]
-    _health_metrics: ChannelHealthMeter
+    buffer: ChannelDataBuffer
+    health_metrics: ChannelHealthMeter
+    sampling_rate: int
 
     def start(self) -> None: ...
 
     def request_stop(self) -> None: ...
 
     def close(self) -> None: ...
-
-    @property
-    def health_metrics(self) -> ChannelHealthMeter: ...
 
 
 class BrainFlowStreamer:
@@ -272,16 +287,19 @@ class BrainFlowStreamer:
         self._board = board
         self._board_id = board.get_board_id()
         self._eeg_channels = board.get_eeg_channels(self._board_id)
-        self._sampling_rate = BoardShim.get_sampling_rate(self._board_id)
+        self.sampling_rate = BoardShim.get_sampling_rate(self._board_id)
         self._buffer_size = buffer_size
         self._poll_interval = poll_interval
-        self.queue: Queue[np.ndarray] = Queue()
+        # 4 channels for accelerometers and sample index.
+        self.buffer = ChannelDataBuffer(
+            len(self._eeg_channels) + 4, self._eeg_channels, buffer_size
+        )
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._stream_started = False
-        self._health_metrics = ChannelHealthMeter(
+        self.health_metrics = ChannelHealthMeter(
             len(self._eeg_channels),
-            self._sampling_rate,
+            self.sampling_rate,
             window_sec=5.0,
         )
 
@@ -291,7 +309,7 @@ class BrainFlowStreamer:
             DataFilter.detrend(data[channel], DetrendOperations.CONSTANT.value)
             DataFilter.perform_bandpass(
                 data[channel],
-                self._sampling_rate,
+                self.sampling_rate,
                 3.0,
                 45.0,
                 2,
@@ -300,7 +318,7 @@ class BrainFlowStreamer:
             )
             DataFilter.perform_bandstop(
                 data[channel],
-                self._sampling_rate,
+                self.sampling_rate,
                 48.0,
                 52.0,
                 2,
@@ -309,7 +327,7 @@ class BrainFlowStreamer:
             )
             DataFilter.perform_bandstop(
                 data[channel],
-                self._sampling_rate,
+                self.sampling_rate,
                 58.0,
                 62.0,
                 2,
@@ -333,16 +351,13 @@ class BrainFlowStreamer:
                     try:
                         chunk = self._board.get_board_data(self._buffer_size)
                         if chunk.size > 0:
-                            eeg_chunk = chunk[self._eeg_channels, :]
-                            self._health_metrics.push(eeg_chunk)
-                            self.queue.put(self.filter_transform(chunk))
+                            self.buffer.push(chunk)
                         else:
                             time.sleep(self._poll_interval)
                     except BrainFlowError as err:
-                        logger.error("BrainFlow read error: {}", err)
-                        break
-            except Exception:
-                logger.exception("BrainFlow streaming thread crashed")
+                        _fatal_daemon_failure("BrainFlow", err)
+            except Exception as exc:
+                _fatal_daemon_failure("BrainFlow", exc)
             finally:
                 logger.info("BrainFlow streaming thread stopped.")
 
@@ -368,10 +383,6 @@ class BrainFlowStreamer:
             except BrainFlowError as err:
                 logger.warning("Failed to release BrainFlow session: {}", err)
 
-    @property
-    def health_metrics(self) -> ChannelHealthMeter:
-        return self._health_metrics
-
 
 class MockEEGStreamer:
     """Background thread that feeds simulated EEG data into a queue for the UI."""
@@ -381,22 +392,25 @@ class MockEEGStreamer:
         num_channels: int,
         buffer_size: int,
         poll_interval: float,
-        sampling_rate: float = 125.0,
+        sampling_rate: int = 125,
         noise_scale: float = 5.0,
     ) -> None:
         self._num_channels = num_channels
         self._buffer_size = buffer_size
         self._poll_interval = poll_interval
-        self._sampling_rate = sampling_rate
+        self.sampling_rate = sampling_rate
         self._noise_scale = noise_scale
-        self.queue: Queue[np.ndarray] = Queue()
+        self.buffer = ChannelDataBuffer(
+            num_channels + 1, list(range(num_channels)), buffer_size
+        )
+        self.sampling_rate = sampling_rate
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._rng = np.random.default_rng()
         self._sample_index = 0
         self._base_frequencies = np.linspace(8.0, 15.0, num_channels)
 
-        self._health_metrics = ChannelHealthMeter(
+        self.health_metrics = ChannelHealthMeter(
             num_channels,
             sampling_rate,
             window_sec=5.0,
@@ -410,13 +424,10 @@ class MockEEGStreamer:
             logger.info("Mock EEG streaming thread started.")
             try:
                 while not self._stop_event.is_set():
-                    chunk = self._generate_chunk()
-                    # First row is a sample index; health expects only EEG rows
-                    self._health_metrics.push(chunk[1:, :])
-                    self.queue.put(chunk)
+                    self.buffer.push(self._generate_chunk())
                     time.sleep(self._poll_interval)
-            except Exception:
-                logger.exception("Mock EEG streaming thread crashed")
+            except Exception as exc:
+                _fatal_daemon_failure("Mock EEG", exc)
             finally:
                 logger.info("Mock EEG streaming thread stopped.")
 
@@ -434,23 +445,20 @@ class MockEEGStreamer:
             self._thread.join(timeout=1.0)
 
     @property
-    def health_metrics(self) -> ChannelHealthMeter:
-        return self._health_metrics
-
-    @property
     def num_channels(self) -> int:
         return self._num_channels
 
     def _generate_chunk(self) -> np.ndarray:
-        buffer_index = np.arange(self._buffer_size, dtype=np.float64)
-        t = (buffer_index + self._sample_index) / self._sampling_rate
-        self._sample_index += self._buffer_size
+        chunk_size = int(self._poll_interval * self.sampling_rate)
+        buffer_index = np.arange(chunk_size, dtype=np.float64)
+        t = (buffer_index + self._sample_index) / self.sampling_rate
+        self._sample_index += chunk_size
         signals = [buffer_index]
         for idx, freq in enumerate(self._base_frequencies):
             phase = idx * np.pi / 4
             amplitude = 40.0 + 5.0 * idx
             baseline = 10.0 * np.sin(2 * np.pi * 1.0 * t)
             alpha_wave = amplitude * np.sin(2 * np.pi * freq * t + phase)
-            noise = self._rng.normal(0.0, self._noise_scale, size=self._buffer_size)
+            noise = self._rng.normal(0.0, self._noise_scale, size=chunk_size)
             signals.append(alpha_wave + baseline + noise)
         return np.vstack(signals)
