@@ -150,7 +150,7 @@ class ChannelHealthMeter:
                 {"reasons": ["warming_up"], "metrics": {}} for _ in range(self.C)
             ]
 
-        X = buffer.get(self.N)
+        X = buffer.get_eeg(self.N)
 
         # ---- time-domain prelims ----
         X -= X.mean(axis=1, keepdims=True)  # detrend (remove DC)
@@ -424,7 +424,8 @@ class MockEEGStreamer:
             logger.info("Mock EEG streaming thread started.")
             try:
                 while not self._stop_event.is_set():
-                    self.buffer.push(self._generate_chunk())
+                    chunk = self._generate_chunk()
+                    self.buffer.push(chunk)
                     time.sleep(self._poll_interval)
             except Exception as exc:
                 _fatal_daemon_failure("Mock EEG", exc)

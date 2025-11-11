@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Optional
 
+from loguru import logger
 import mne
 import numpy as np
 from torch import nn

@@ -203,7 +203,7 @@ class Glyph(App):
                 scores, flags = hm.compute(buf)
                 self._health_panel.update_metrics(scores, flags)
             else:
-                seconds_filled = buf.prop_filled(hm.N) / self._streamer.sampling_rate
+                seconds_filled = buf.prop_filled(hm.N) * hm.window_sec
                 self._health_panel.update_waiting(seconds_filled, hm.window_sec)
         except Exception as e:
             # Avoid crashing the UI if health computation fails
@@ -264,7 +264,7 @@ def main() -> int:
         channel_names = [channel.reference_label for channel in montage.channels]
         if args.mock_eeg:
             num_channels = len(montage.channels)
-            mock_sampling_rate = 250
+            mock_sampling_rate = 125
             streamer = MockEEGStreamer(
                 num_channels=num_channels,
                 buffer_size=config.buffer_size,

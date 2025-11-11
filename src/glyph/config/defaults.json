@@ -1,8 +1,8 @@
 {
-  "buffer_size": 256,
+  "buffer_size": 625,
   "poll_interval": 0.05,
   "window_size": 512,
-  "refresh_interval": 0.025,
+  "refresh_interval": 0.05,
   "ylim": null,
   "montage_path": "default_ultracortex_16.json"
 }
