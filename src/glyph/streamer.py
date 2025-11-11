@@ -6,11 +6,6 @@ from typing import Optional, Protocol
 import numpy as np
 from brainflow.board_shim import BoardShim, BrainFlowError
 from loguru import logger
-from brainflow.data_filter import (
-    DataFilter,
-    DetrendOperations,
-    FilterTypes,
-)
 
 
 def _fatal_daemon_failure(streamer_name: str, exc: BaseException) -> None:
@@ -32,7 +27,7 @@ class ChannelDataBuffer:
     def push(self, chunk: np.ndarray):
         assert (
             chunk.ndim == 2 and chunk.shape[0] == self.num_channels
-        ), f"Expected (C,T) shape, got {chunk.shape}"
+        ), f"Expected ({self.num_channels},{chunk.shape[1]}) shape, got {chunk.shape}"
         T = chunk.shape[1]
         if T >= self.buffer_size:
             self.buffer[:, :] = chunk[:, -self.buffer_size :]
@@ -291,8 +286,9 @@ class BrainFlowStreamer:
         self._buffer_size = buffer_size
         self._poll_interval = poll_interval
         # 4 channels for accelerometers and sample index.
+        # No idea what the remaining 12 are for.
         self.buffer = ChannelDataBuffer(
-            len(self._eeg_channels) + 4, self._eeg_channels, buffer_size
+            len(self._eeg_channels) + 16, self._eeg_channels, buffer_size
         )
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -302,39 +298,6 @@ class BrainFlowStreamer:
             self.sampling_rate,
             window_sec=5.0,
         )
-
-    def filter_transform(self, data: np.ndarray) -> np.ndarray:
-        """Filter and transform data from the board."""
-        for count, channel in enumerate(self._eeg_channels):  # plot timeseries
-            DataFilter.detrend(data[channel], DetrendOperations.CONSTANT.value)
-            DataFilter.perform_bandpass(
-                data[channel],
-                self.sampling_rate,
-                3.0,
-                45.0,
-                2,
-                FilterTypes.BUTTERWORTH_ZERO_PHASE,
-                0,
-            )
-            DataFilter.perform_bandstop(
-                data[channel],
-                self.sampling_rate,
-                48.0,
-                52.0,
-                2,
-                FilterTypes.BUTTERWORTH_ZERO_PHASE,
-                0,
-            )
-            DataFilter.perform_bandstop(
-                data[channel],
-                self.sampling_rate,
-                58.0,
-                62.0,
-                2,
-                FilterTypes.BUTTERWORTH_ZERO_PHASE,
-                0,
-            )
-        return data
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

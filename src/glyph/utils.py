@@ -15,8 +15,14 @@ from brainflow.board_shim import (
 from loguru import logger
 import numpy as np
 from serial.tools import list_ports
+import torch
 from torch import nn
 from torch.package.package_importer import PackageImporter
+from brainflow.data_filter import (
+    DataFilter,
+    DetrendOperations,
+    FilterTypes,
+)
 
 
 @dataclass(frozen=True)
@@ -222,3 +228,56 @@ def load_model(model_loader_config: ModelLoaderConfig) -> nn.Module:
     model.load_state_dict(state)
     model.to(model_loader_config.device).eval()
     return model
+
+
+def per_channel_normalize(x: torch.Tensor) -> torch.Tensor:
+    """Normalize each channel of a tensor independently."""
+    return (x - x.mean(dim=-1, keepdim=True)) / x.std(dim=-1, keepdim=True)
+
+
+def per_channel_mains_bandstop(data: np.ndarray, sampling_rate: int) -> np.ndarray:
+    for i in range(len(data)):  # plot timeseries
+        DataFilter.perform_bandstop(
+            data[i],
+            sampling_rate,
+            48.0,
+            52.0,
+            2,
+            FilterTypes.BUTTERWORTH_ZERO_PHASE,
+            0,
+        )
+    return data
+
+
+def per_channel_detrend(data: np.ndarray, sampling_rate: int) -> np.ndarray:
+    """Filter and transform data from the board."""
+    for i in range(len(data)):  # plot timeseries
+        DataFilter.detrend(data[i], DetrendOperations.CONSTANT.value)
+        DataFilter.perform_bandpass(
+            data[i],
+            sampling_rate,
+            3.0,
+            45.0,
+            2,
+            FilterTypes.BUTTERWORTH_ZERO_PHASE,
+            0,
+        )
+        DataFilter.perform_bandstop(
+            data[i],
+            sampling_rate,
+            48.0,
+            52.0,
+            2,
+            FilterTypes.BUTTERWORTH_ZERO_PHASE,
+            0,
+        )
+        DataFilter.perform_bandstop(
+            data[i],
+            sampling_rate,
+            58.0,
+            62.0,
+            2,
+            FilterTypes.BUTTERWORTH_ZERO_PHASE,
+            0,
+        )
+    return data

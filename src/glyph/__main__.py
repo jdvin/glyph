@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from queue import Empty
 from typing import List, Optional
 import json
 
@@ -18,6 +17,8 @@ from textual.app import App, ComposeResult
 from textual.containers import Grid, Container
 from textual.timer import Timer
 from textual.widgets import Footer, Header, TabPane, TabbedContent, Select
+import torch
+from torch.nn import functional as F
 
 from .plot import (
     ChannelLinePlot,
@@ -37,6 +38,9 @@ from .utils import (
     load_app_config,
     format_board_name,
     load_model,
+    per_channel_detrend,
+    per_channel_mains_bandstop,
+    per_channel_normalize,
 )
 
 
@@ -139,8 +143,8 @@ class Glyph(App):
             logger.info("Loading model from {}", model_loader_config_path)
             with open(model_loader_config_path, "r", encoding="utf-8") as file:
                 self._model_loader_config = ModelLoaderConfig(**json.load(file))
-            self.model = load_model(self._model_loader_config)
-        self._model_panel = ModelDetailsPanel(self.model)
+            self._model = load_model(self._model_loader_config)
+        self._model_panel = ModelDetailsPanel(self._model)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -188,10 +192,11 @@ class Glyph(App):
         # Index 0 is a sample index.
         # Indexes num_channels + [2-4] are accelerometer data.
         eeg_data = self._streamer.buffer.get_eeg()
+        eeg_data = per_channel_mains_bandstop(eeg_data, self._streamer.sampling_rate)
 
         # IMPORTANT: For OpenBCI via BrainFlow, EXG channels are already in µV.
-
-        for idx, row in enumerate(eeg_data):
+        plot_data = per_channel_detrend(eeg_data, self._streamer.sampling_rate)
+        for idx, row in enumerate(plot_data):
             self._timeseries[idx].post(row)
 
         # Update health metrics panel; show waiting progress until ready.
@@ -211,14 +216,27 @@ class Glyph(App):
             raise e
 
         self._channel_map.update_values(scores)
-
-        # channel_signals = torch.tensor(eeg_data)
-        # channel_positions = self._montage.channel_positions
-        # sequence_positions = ...
-        # task_keys = ...
-        # labels = ...
-        # channel_mask = None
-        # samples_mask = None
+        device = self._model_loader_config.device
+        channel_signals = torch.tensor(
+            eeg_data, device=device, dtype=torch.float32
+        ).unsqueeze(0)
+        channel_positions = torch.tensor(
+            self._montage.channel_positions, device=device, dtype=torch.float32
+        ).unsqueeze(0)
+        sequence_positions = torch.linspace(0, 16000, 625, device=device).unsqueeze(0)
+        task_keys = torch.tensor([[0]], device=device)
+        labels = torch.tensor([0], device=device)
+        samples_mask = torch.ones_like(sequence_positions)
+        _, logits, _ = self._model(
+            per_channel_normalize(channel_signals),
+            channel_positions,
+            sequence_positions,
+            task_keys,
+            labels,
+            None,
+            samples_mask,
+        )
+        logger.debug(f"probs: {F.softmax(logits)}")
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
