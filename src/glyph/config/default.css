@@ -1,0 +1,45 @@
+Screen {
+  layout: vertical;
+}
+
+Header {
+  dock: top;
+}
+
+Footer {
+  dock: bottom;
+}
+
+#channel-panel {
+  layout: grid;
+  grid-size: 3;
+  /* add left metrics column */
+  grid-gutter: 1;
+  padding: 1 2;
+}
+
+#timeseries-panel {
+  layout: grid;
+  grid-size: 4;
+  grid-gutter: 0;
+  padding: 0;
+}
+
+.channel-plot {
+  border: round $surface;
+  padding: 0;
+  margin: 0;
+}
+
+.channel-title {
+  text-style: bold;
+}
+
+.channel-latest {
+  color: white;
+}
+
+#model-panel {
+  layout: grid;
+  grid-size: 2;
+}

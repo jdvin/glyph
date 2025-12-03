@@ -27,6 +27,7 @@ from .plot import (
     HealthMetricsPanel,
     BoardDetails,
     ModelDetailsPanel,
+    ModelProbsPlot,
 )
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
 from .utils import (
@@ -36,6 +37,7 @@ from .utils import (
     create_board,
     detect_serial_port,
     load_app_config,
+    load_css,
     format_board_name,
     load_model,
     per_channel_detrend,
@@ -72,44 +74,6 @@ def parse_args() -> argparse.Namespace:
 class Glyph(App):
     """Textual application that renders live EEG."""
 
-    CSS = """
-    Screen { layout: vertical; }
-    Header { dock: top; }
-    Footer { dock: bottom; }
-
-    #channel-map {
-        layout: grid;
-        grid-size: 3;            /* add left metrics column */
-        grid-gutter: 1;
-        padding: 1 2;
-    }
-    /* Allow the map widget to shrink within its grid cell */
-    #mapplot { 
-        min-width: 0;
-    }
-
-    #timeseries{
-        layout: grid;
-        grid-size: 4;
-        grid-gutter: 0;
-        padding: 0;
-    }
-    .channel-plot {
-        border: round $surface;
-        padding: 0;
-        margin: 0;
-    }
-    .channel-title { text-style: bold; }
-    .channel-latest { color: white; }
-
-    #channelplot {
-        width: 100%;
-        height: 10;
-        padding: 0;
-        margin: 0;
-    }
-    """
-
     BINDINGS = [("q", "quit", "Quit")]
 
     def __init__(
@@ -122,8 +86,12 @@ class Glyph(App):
         montage: Montage,
         board_details: BoardDetails,
         model_loader_config_path: str | None,
+        css: str = "",
     ) -> None:
         super().__init__()
+        # Set CSS dynamically
+        if css:
+            self.CSS = css
         self._streamer = streamer
         self._channel_indices = channel_indices
         self._channel_names = channel_names
@@ -139,18 +107,22 @@ class Glyph(App):
         self._health_panel = HealthMetricsPanel(self._channel_names)
         self._board_panel = BoardDetailsPanel(board_details)
         self._refresh_timer: Optional[Timer] = None
+        self._model = None
+        self._labels_map = {}
+        self._model_loader_config = None
         if model_loader_config_path:
             logger.info("Loading model from {}", model_loader_config_path)
             with open(model_loader_config_path, "r", encoding="utf-8") as file:
                 self._model_loader_config = ModelLoaderConfig(**json.load(file))
-            self._model = load_model(self._model_loader_config)
-        self._model_panel = ModelDetailsPanel(self._model)
+            self._model, self._labels_map = load_model(self._model_loader_config)
+        self._model_details_panel = ModelDetailsPanel(self._model)
+        self._model_probs_panel = ModelProbsPlot(self._model, self._labels_map)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with TabbedContent():
             with TabPane("Channel Map"):
-                with Container(id="channel-map"):
+                with Container(id="channel-panel"):
                     yield self._board_panel
                     yield self._channel_map
                     yield self._health_panel
@@ -168,12 +140,13 @@ class Glyph(App):
                     ),
                     id="ylim-select",
                 )
-                with Grid(id="timeseries"):
+                with Grid(id="timeseries-panel"):
                     for plot in self._timeseries:
                         yield plot
             with TabPane("Model"):
-                with Container(id="model-details"):
-                    yield self._model_panel
+                with Container(id="model-panel"):
+                    yield self._model_details_panel
+                    yield self._model_probs_panel
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -193,8 +166,6 @@ class Glyph(App):
         # Indexes num_channels + [2-4] are accelerometer data.
         eeg_data = self._streamer.buffer.get_eeg()
         eeg_data = per_channel_mains_bandstop(eeg_data, self._streamer.sampling_rate)
-
-        # IMPORTANT: For OpenBCI via BrainFlow, EXG channels are already in µV.
         plot_data = per_channel_detrend(eeg_data, self._streamer.sampling_rate)
         for idx, row in enumerate(plot_data):
             self._timeseries[idx].post(row)
@@ -216,27 +187,37 @@ class Glyph(App):
             raise e
 
         self._channel_map.update_values(scores)
-        device = self._model_loader_config.device
-        channel_signals = torch.tensor(
-            eeg_data, device=device, dtype=torch.float32
-        ).unsqueeze(0)
-        channel_positions = torch.tensor(
-            self._montage.channel_positions, device=device, dtype=torch.float32
-        ).unsqueeze(0)
-        sequence_positions = torch.linspace(0, 16000, 625, device=device).unsqueeze(0)
-        task_keys = torch.tensor([[0]], device=device)
-        labels = torch.tensor([0], device=device)
-        samples_mask = torch.ones_like(sequence_positions)
-        _, logits, _ = self._model(
-            per_channel_normalize(channel_signals),
-            channel_positions,
-            sequence_positions,
-            task_keys,
-            labels,
-            None,
-            samples_mask,
-        )
-        logger.debug(f"probs: {F.softmax(logits)}")
+
+        # Run model inference if model is loaded
+        if self._model is not None:
+            device = self._model_loader_config.device
+            channel_signals = torch.tensor(
+                eeg_data, device=device, dtype=torch.float32
+            ).unsqueeze(0)
+            channel_positions = torch.tensor(
+                self._montage.channel_positions, device=device, dtype=torch.float32
+            ).unsqueeze(0)
+            sequence_positions = torch.linspace(0, 16000, 625, device=device).unsqueeze(
+                0
+            )
+            task_keys = torch.tensor([[0]], device=device)
+            labels = torch.tensor([0], device=device)
+            samples_mask = torch.ones_like(sequence_positions)
+            _, logits, _ = self._model(
+                per_channel_normalize(channel_signals),
+                channel_positions,
+                sequence_positions,
+                task_keys,
+                labels,
+                None,
+                samples_mask,
+            )
+            # Compute softmax probabilities
+            probs = F.softmax(logits, dim=-1)
+
+            # Update model panel with probabilities
+            probs_np = probs.cpu().detach().numpy().squeeze()
+            self._model_probs_panel.update_probabilities(probs_np)
 
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
@@ -271,6 +252,9 @@ def main() -> int:
     except ValueError as err:
         logger.error("Invalid configuration: {}", err)
         return 1
+
+    # Load CSS from config
+    css = load_css(config.css_path)
 
     board: BoardShim
     streamer: StreamerProtocol
@@ -331,6 +315,7 @@ def main() -> int:
             montage=montage,
             board_details=board_details,
             model_loader_config_path=args.model_loader_config_path,
+            css=css,
         )
         app.run()
     except KeyboardInterrupt:

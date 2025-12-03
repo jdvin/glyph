@@ -47,7 +47,7 @@ class ChannelLinePlot(Static):
         self._ylim = float(ylim_uv) if ylim_uv is not None else None
 
         self._title = Label(name, classes="channel-title")
-        self._plot = PlotextPlot(id="channelplot")
+        self._plot = PlotextPlot()
         self._latest = Label("—", classes="channel-latest")
 
     def compose(self) -> ComposeResult:
@@ -348,15 +348,103 @@ class HealthMetricsPanel(Static):
 
 
 class ModelDetailsPanel(Static):
-    """Panel listing model architecture."""
+    """Panel showing model architecture and output probabilities."""
 
-    def __init__(self, model: nn.Module | None) -> None:
+    def __init__(
+        self,
+        model: nn.Module | None,
+        labels_map: dict[str, int] | None = None,
+        max_samples: int = 100,
+    ) -> None:
         super().__init__(id="model-details")
         self.model = model
+        self._model_info = Label("", id="model-info")
+
+    def compose(self) -> ComposeResult:
+        yield self._model_info
 
     def on_mount(self) -> None:
-        self.update(self._model_architecture_text)
+        self._model_info.update(self._model_architecture_text)
 
     @property
     def _model_architecture_text(self) -> str:
-        return str(self.model) if self.model else "No model loaded."
+        if self.model is None:
+            return "No model loaded."
+
+        # Count parameters
+        total_params = sum(p.numel() for p in self.model.parameters())
+
+        lines = [
+            "Model Info",
+            "",
+            f"Total Parameters: {total_params:,}",
+            f"Architecture: {self.model}",
+        ]
+        return "\n".join(lines)
+
+
+class ModelProbsPlot(Static):
+    def __init__(
+        self,
+        model: nn.Module | None,
+        labels_map: dict[int, str] | None = None,
+        max_samples: int = 100,
+    ) -> None:
+        super().__init__(id="model-probs")
+        self.model = model
+        self.labels_map = labels_map or {}
+        self.max_samples = max_samples
+        # Initialize buffer as list of arrays (one per class)
+        self._num_classes = len(self.labels_map) if self.labels_map else 0
+        self._buffers: list[list[float]] = [[] for _ in range(self._num_classes)]
+        self._plot = PlotextPlot()
+
+        # Define colors for different probability lines
+        self._colors = ["red", "green", "blue", "yellow", "magenta", "cyan", "white"]
+
+    def compose(self) -> ComposeResult:
+        yield self._plot
+
+    def update_probabilities(self, probabilities: np.ndarray) -> None:
+        """Update the plot with new probability values.
+
+        Args:
+            probabilities: Array of probabilities, shape (num_classes,)
+        """
+        if self._num_classes == 0:
+            # Initialize buffers if not done yet
+            self._num_classes = len(probabilities)
+            self._buffers = [[] for _ in range(self._num_classes)]
+            # Create default labels if not provided
+            if not self.labels_map:
+                self.labels_map = {i: f"Class {i}" for i in range(self._num_classes)}
+
+        # Add new probabilities to buffers
+        for i, prob in enumerate(probabilities):
+            self._buffers[i].append(float(prob))
+            # Keep only the most recent max_samples
+            if len(self._buffers[i]) > self.max_samples:
+                self._buffers[i].pop(0)
+
+        self._redraw()
+
+    def _redraw(self) -> None:
+        """Redraw the probability plot."""
+        plt = self._plot.plt
+        plt.clear_figure()
+        plt.title("Model Output Probabilities")
+        plt.ylabel("Probability")
+        plt.xlabel("Time Step")
+
+        # Plot each class probability
+        for i, buffer in enumerate(self._buffers):
+            if buffer:
+                label = self.labels_map.get(i, f"Class {i}")
+                color = self._colors[i % len(self._colors)]
+                plt.plot(buffer, label=label, color=color, marker="braille")
+
+        plt.ylim(0, 1)
+        if self._buffers and self._buffers[0]:
+            plt.xlim(0, len(self._buffers[0]) - 1)
+
+        self._plot.refresh(layout=True)

@@ -4,5 +4,6 @@
   "window_size": 512,
   "refresh_interval": 0.05,
   "ylim": null,
-  "montage_path": "default_ultracortex_16.json"
+  "montage_path": "default_ultracortex_16.json",
+  "css_path": "default.css"
 }

@@ -33,6 +33,7 @@ class AppConfig:
     refresh_interval: float
     ylim: Optional[float]
     montage_path: str
+    css_path: str
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,26 @@ def load_app_config(config_path: Optional[str] = None) -> AppConfig:
     return _parse_config(config_data)
 
 
+def load_css(css_path: str) -> str:
+    """Load CSS from a file path.
+
+    Args:
+        css_path: Relative path to CSS file (relative to glyph.config)
+
+    Returns:
+        CSS content as a string
+    """
+    try:
+        resource = resources.files("glyph.config").joinpath(css_path)
+        with resource.open("r", encoding="utf-8") as file:
+            css_content = file.read()
+        logger.debug(f"Loaded CSS from {css_path}")
+        return css_content
+    except Exception as e:
+        logger.warning(f"Could not load CSS from {css_path}: {e}. Using empty CSS.")
+        return ""
+
+
 def _parse_config(config_data: dict[str, Any]) -> AppConfig:
     try:
         buffer_size = int(config_data["buffer_size"])
@@ -116,6 +137,7 @@ def _parse_config(config_data: dict[str, Any]) -> AppConfig:
         window_size = int(config_data["window_size"])
         refresh_interval = float(config_data["refresh_interval"])
         montage_path = config_data["montage_path"]
+        css_path = config_data["css_path"]
     except KeyError as missing:
         raise ValueError(
             f"Missing required config key: {missing.args[0]!s}"
@@ -139,6 +161,7 @@ def _parse_config(config_data: dict[str, Any]) -> AppConfig:
         refresh_interval=refresh_interval,
         ylim=ylim,
         montage_path=montage_path,
+        css_path=css_path,
     )
 
 
@@ -212,8 +235,14 @@ def describe_function(func):
     return f"{func.__name__}{sig}\n\n{doc}"
 
 
-def load_model(model_loader_config: ModelLoaderConfig) -> nn.Module:
-    """Load a PyTorch model from a pytorch package."""
+def load_model(
+    model_loader_config: ModelLoaderConfig,
+) -> tuple[nn.Module, dict[int, str]]:
+    """Load a PyTorch model from a pytorch package.
+
+    Returns:
+        A tuple of (model, labels_map) where labels_map maps class indices to labels.
+    """
 
     imp = PackageImporter(model_loader_config.package_path)
     # Assumes module name is the model name in lower case.
@@ -224,10 +253,22 @@ def load_model(model_loader_config: ModelLoaderConfig) -> nn.Module:
     )
     state = imp.load_pickle("assets", "state.pkl")
     model_config = imp.load_pickle("config", "model_config.pkl")
+
+    # Extract labels_map from model_config
+    labels_map: dict[int, str] = {}
+    try:
+        labels_map = model_config.tasks[0].labels_map
+        logger.info(f"Loaded labels_map with {len(labels_map)} classes")
+    except (AttributeError, IndexError) as e:
+        logger.warning(
+            f"Could not load labels_map from model_config.tasks[0].labels_map: {e}"
+        )
+        labels_map = {}
+
     model = Model(model_config, rank=0, world_size=1).eval()
     model.load_state_dict(state)
     model.to(model_loader_config.device).eval()
-    return model
+    return model, labels_map
 
 
 def per_channel_normalize(x: torch.Tensor) -> torch.Tensor:
@@ -240,9 +281,9 @@ def per_channel_mains_bandstop(data: np.ndarray, sampling_rate: int) -> np.ndarr
         DataFilter.perform_bandstop(
             data[i],
             sampling_rate,
-            48.0,
-            52.0,
-            2,
+            49.5,
+            50.5,
+            4,
             FilterTypes.BUTTERWORTH_ZERO_PHASE,
             0,
         )
@@ -253,31 +294,5 @@ def per_channel_detrend(data: np.ndarray, sampling_rate: int) -> np.ndarray:
     """Filter and transform data from the board."""
     for i in range(len(data)):  # plot timeseries
         DataFilter.detrend(data[i], DetrendOperations.CONSTANT.value)
-        DataFilter.perform_bandpass(
-            data[i],
-            sampling_rate,
-            3.0,
-            45.0,
-            2,
-            FilterTypes.BUTTERWORTH_ZERO_PHASE,
-            0,
-        )
-        DataFilter.perform_bandstop(
-            data[i],
-            sampling_rate,
-            48.0,
-            52.0,
-            2,
-            FilterTypes.BUTTERWORTH_ZERO_PHASE,
-            0,
-        )
-        DataFilter.perform_bandstop(
-            data[i],
-            sampling_rate,
-            58.0,
-            62.0,
-            2,
-            FilterTypes.BUTTERWORTH_ZERO_PHASE,
-            0,
-        )
+
     return data
