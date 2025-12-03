@@ -117,6 +117,16 @@ class Glyph(App):
             self._model, self._labels_map = load_model(self._model_loader_config)
         self._model_details_panel = ModelDetailsPanel(self._model)
         self._model_probs_panel = ModelProbsPlot(self._model, self._labels_map)
+        self._ts_scale = Select(
+            options=[
+                ("200 µV", "200"),
+                ("100 µV", "100"),
+                ("50 µV", "50"),
+                ("Auto", "auto"),
+            ],
+            value=("auto" if self._ylim_uv is None else str(int(self._ylim_uv))),
+            id="ylim-select",
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -128,18 +138,7 @@ class Glyph(App):
                     yield self._health_panel
             with TabPane("Time Series"):
                 # Y-limit selector above the plots
-                yield Select(
-                    options=[
-                        ("200 µV", "200"),
-                        ("100 µV", "100"),
-                        ("50 µV", "50"),
-                        ("Auto", "auto"),
-                    ],
-                    value=(
-                        "auto" if self._ylim_uv is None else str(int(self._ylim_uv))
-                    ),
-                    id="ylim-select",
-                )
+                yield self._ts_scale
                 with Grid(id="timeseries-panel"):
                     for plot in self._timeseries:
                         yield plot

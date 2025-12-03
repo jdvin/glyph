@@ -392,7 +392,14 @@ class ModelProbsPlot(Static):
     ) -> None:
         super().__init__(id="model-probs")
         self.model = model
-        self.labels_map = labels_map or {}
+        if labels_map is not None:
+            # Labels map is from class label to index, but here we need index to label.
+            self.labels_map: dict[int, str] = {
+                value: key for key, value in labels_map.items()
+            }
+        else:
+            assert model is None
+            self.labels_map = {}
         self.max_samples = max_samples
         # Initialize buffer as list of arrays (one per class)
         self._num_classes = len(self.labels_map) if self.labels_map else 0
@@ -411,14 +418,6 @@ class ModelProbsPlot(Static):
         Args:
             probabilities: Array of probabilities, shape (num_classes,)
         """
-        if self._num_classes == 0:
-            # Initialize buffers if not done yet
-            self._num_classes = len(probabilities)
-            self._buffers = [[] for _ in range(self._num_classes)]
-            # Create default labels if not provided
-            if not self.labels_map:
-                self.labels_map = {i: f"Class {i}" for i in range(self._num_classes)}
-
         # Add new probabilities to buffers
         for i, prob in enumerate(probabilities):
             self._buffers[i].append(float(prob))
@@ -439,7 +438,7 @@ class ModelProbsPlot(Static):
         # Plot each class probability
         for i, buffer in enumerate(self._buffers):
             if buffer:
-                label = self.labels_map.get(i, f"Class {i}")
+                label = self.labels_map[i]
                 color = self._colors[i % len(self._colors)]
                 plt.plot(buffer, label=label, color=color, marker="braille")
 
