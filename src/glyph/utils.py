@@ -268,7 +268,7 @@ def load_model(
     model = Model(model_config, rank=0, world_size=1).eval()
     model.load_state_dict(state)
     model.to(model_loader_config.device).eval()
-    return model, labels_map
+    return model, model_config
 
 
 def per_channel_normalize(x: torch.Tensor) -> torch.Tensor:
@@ -281,8 +281,17 @@ def per_channel_mains_bandstop(data: np.ndarray, sampling_rate: int) -> np.ndarr
         DataFilter.perform_bandstop(
             data[i],
             sampling_rate,
-            49.5,
-            50.5,
+            48,
+            52,
+            4,
+            FilterTypes.BUTTERWORTH_ZERO_PHASE,
+            0,
+        )
+        DataFilter.perform_bandpass(
+            data[i],
+            sampling_rate,
+            5,
+            60.0,
             4,
             FilterTypes.BUTTERWORTH_ZERO_PHASE,
             0,
@@ -294,5 +303,4 @@ def per_channel_detrend(data: np.ndarray, sampling_rate: int) -> np.ndarray:
     """Filter and transform data from the board."""
     for i in range(len(data)):  # plot timeseries
         DataFilter.detrend(data[i], DetrendOperations.CONSTANT.value)
-
     return data

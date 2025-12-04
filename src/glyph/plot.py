@@ -56,7 +56,7 @@ class ChannelLinePlot(Static):
         yield self._latest
 
     def post(self, values: np.ndarray) -> None:
-        self._buffer = values
+        self._buffer = values[: self.max_samples]
         # Choose y-limits
         if self._ylim is not None:
             y_min, y_max = -self._ylim, self._ylim

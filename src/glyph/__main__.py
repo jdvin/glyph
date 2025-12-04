@@ -114,9 +114,11 @@ class Glyph(App):
             logger.info("Loading model from {}", model_loader_config_path)
             with open(model_loader_config_path, "r", encoding="utf-8") as file:
                 self._model_loader_config = ModelLoaderConfig(**json.load(file))
-            self._model, self._labels_map = load_model(self._model_loader_config)
+            self._model, self._model_config = load_model(self._model_loader_config)
         self._model_details_panel = ModelDetailsPanel(self._model)
-        self._model_probs_panel = ModelProbsPlot(self._model, self._labels_map)
+        self._model_probs_panel = ModelProbsPlot(
+            self._model, self._model_config.labels_map
+        )
         self._ts_scale = Select(
             options=[
                 ("200 µV", "200"),
@@ -164,8 +166,9 @@ class Glyph(App):
         # Index 0 is a sample index.
         # Indexes num_channels + [2-4] are accelerometer data.
         eeg_data = self._streamer.buffer.get_eeg()
-        eeg_data = per_channel_mains_bandstop(eeg_data, self._streamer.sampling_rate)
         plot_data = per_channel_detrend(eeg_data, self._streamer.sampling_rate)
+        eeg_data = per_channel_mains_bandstop(eeg_data, self._streamer.sampling_rate)
+        plot_data = per_channel_mains_bandstop(plot_data, self._streamer.sampling_rate)
         for idx, row in enumerate(plot_data):
             self._timeseries[idx].post(row)
 
@@ -196,9 +199,13 @@ class Glyph(App):
             channel_positions = torch.tensor(
                 self._montage.channel_positions, device=device, dtype=torch.float32
             ).unsqueeze(0)
-            sequence_positions = torch.linspace(0, 16000, 625, device=device).unsqueeze(
-                0
-            )
+            dc = self._model_config.data_config
+            sequence_positions = torch.linspace(
+                0,
+                dc.sequence_length_seconds * dc.position_index_per_second,
+                int(self._streamer.sampling_rate * dc.sequence_length_seconds),
+                device=device,
+            ).unsqueeze(0)
             task_keys = torch.tensor([[0]], device=device)
             labels = torch.tensor([0], device=device)
             samples_mask = torch.ones_like(sequence_positions)
