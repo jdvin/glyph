@@ -5,5 +5,21 @@
   "refresh_interval": 0.05,
   "ylim": null,
   "montage_path": "default_ultracortex_16.json",
-  "css_path": "default.css"
+  "css_path": "default.css",
+  "filter_configs": [
+    {
+      "bounds": [
+        1,
+        60
+      ],
+      "btype": "bandpass"
+    },
+    {
+      "bounds": [
+        48,
+        50
+      ],
+      "btype": "bandstop"
+    }
+  ]
 }

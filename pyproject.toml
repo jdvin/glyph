@@ -11,6 +11,7 @@ dependencies = [
     "mne>=1.10.2",
     "numpy>=2.2.6",
     "pyserial>=3.5",
+    "scipy>=1.15.3",
     "textual-plotext>=1.0.1",
     "torch>=2.9.0",
     "wavelet",

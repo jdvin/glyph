@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from importlib import resources
+from enum import Enum
 import inspect
 import json
 import mne
@@ -18,11 +19,18 @@ from serial.tools import list_ports
 import torch
 from torch import nn
 from torch.package.package_importer import PackageImporter
-from brainflow.data_filter import (
-    DataFilter,
-    DetrendOperations,
-    FilterTypes,
-)
+from scipy import signal
+
+
+class FilterType(Enum):
+    BANDPASS = "bandpass"
+    BANDSTOP = "bandstop"
+
+
+@dataclass(frozen=True)
+class FilterConfig:
+    bounds: tuple[float, float]
+    btype: FilterType
 
 
 @dataclass(frozen=True)
@@ -34,6 +42,7 @@ class AppConfig:
     ylim: Optional[float]
     montage_path: str
     css_path: str
+    filter_configs: list[FilterConfig]
 
 
 @dataclass(frozen=True)
@@ -94,6 +103,27 @@ class ModelLoaderConfig:
     device: str
 
 
+class StreamingSOSFilter:
+    def __init__(self, filter_configs: list[FilterConfig], fs: int, n_channels: int):
+        self.sos = [
+            signal.butter(4, fc.bounds, btype=fc.btype.value, fs=fs, output="sos")
+            for fc in filter_configs
+        ]
+        zi_base = [signal.sosfilt_zi(sos_i) for sos_i in self.sos]  # (n_sections, 2)
+        # add channel dimension
+        self.zi = [
+            np.repeat(zi_base[:, np.newaxis, :], n_channels, axis=-2)
+            for zi_base in zi_base
+        ]
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        # x shape: (n_channels, n_samples)
+        y = x.copy()
+        for i in range(len(self.sos)):
+            y, self.zi[i] = signal.sosfilt(self.sos[i], y, zi=self.zi[i], axis=-1)
+        return x
+
+
 def load_app_config(config_path: Optional[str] = None) -> AppConfig:
     """Load application configuration from JSON."""
     if config_path:
@@ -138,6 +168,10 @@ def _parse_config(config_data: dict[str, Any]) -> AppConfig:
         refresh_interval = float(config_data["refresh_interval"])
         montage_path = config_data["montage_path"]
         css_path = config_data["css_path"]
+        filter_configs = [
+            FilterConfig(fc["bounds"], FilterType(fc["btype"]))
+            for fc in config_data["filter_configs"]
+        ]
     except KeyError as missing:
         raise ValueError(
             f"Missing required config key: {missing.args[0]!s}"
@@ -162,6 +196,7 @@ def _parse_config(config_data: dict[str, Any]) -> AppConfig:
         ylim=ylim,
         montage_path=montage_path,
         css_path=css_path,
+        filter_configs=filter_configs,
     )
 
 
@@ -274,33 +309,3 @@ def load_model(
 def per_channel_normalize(x: torch.Tensor) -> torch.Tensor:
     """Normalize each channel of a tensor independently."""
     return (x - x.mean(dim=-1, keepdim=True)) / x.std(dim=-1, keepdim=True)
-
-
-def per_channel_mains_bandstop(data: np.ndarray, sampling_rate: int) -> np.ndarray:
-    for i in range(len(data)):  # plot timeseries
-        DataFilter.perform_bandstop(
-            data[i],
-            sampling_rate,
-            48,
-            52,
-            4,
-            FilterTypes.BUTTERWORTH_ZERO_PHASE,
-            0,
-        )
-        DataFilter.perform_bandpass(
-            data[i],
-            sampling_rate,
-            5,
-            60.0,
-            4,
-            FilterTypes.BUTTERWORTH_ZERO_PHASE,
-            0,
-        )
-    return data
-
-
-def per_channel_detrend(data: np.ndarray, sampling_rate: int) -> np.ndarray:
-    """Filter and transform data from the board."""
-    for i in range(len(data)):  # plot timeseries
-        DataFilter.detrend(data[i], DetrendOperations.CONSTANT.value)
-    return data

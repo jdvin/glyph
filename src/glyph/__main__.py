@@ -8,6 +8,7 @@ from typing import List, Optional
 import json
 
 import numpy as np
+from numpy.lib.format import open_memmap
 from brainflow.board_shim import (
     BoardShim,
     BrainFlowError,
@@ -32,6 +33,7 @@ from .plot import (
 from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
 from .utils import (
     AppConfig,
+    FilterConfig,
     ModelLoaderConfig,
     Montage,
     create_board,
@@ -40,10 +42,21 @@ from .utils import (
     load_css,
     format_board_name,
     load_model,
-    per_channel_detrend,
-    per_channel_mains_bandstop,
     per_channel_normalize,
+    StreamingSOSFilter,
 )
+
+
+def _positive_int(value: str) -> int:
+    try:
+        ivalue = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Expected integer, received '{value}'."
+        ) from exc
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError("Value must be a positive integer.")
+    return ivalue
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +81,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to a JSON file containing the model loader config.",
     )
+    parser.add_argument(
+        "--data-task",
+        default="",
+        help="Optional task label to store alongside each saved EEG frame.",
+    )
+    parser.add_argument(
+        "--data-label",
+        default="",
+        help="Optional class label to store alongside each saved EEG frame.",
+    )
+    parser.add_argument(
+        "--memmap-path",
+        default=None,
+        help=(
+            "Base path for NumPy memmap files; creates {path}_eeg.npy and "
+            "{path}_labels.npy to store streamed frames."
+        ),
+    )
+    parser.add_argument(
+        "--memmap-frames",
+        type=_positive_int,
+        default=5,
+        help="Number of frames (N) to keep inside the memmap ring buffer (default: 5).",
+    )
     return parser.parse_args()
 
 
@@ -85,7 +122,12 @@ class Glyph(App):
         refresh_interval: float,
         montage: Montage,
         board_details: BoardDetails,
+        filter_configs: list[FilterConfig],
         model_loader_config_path: str | None,
+        memmap_path: str | None = None,
+        memmap_frames: int = 5,
+        data_task: str = "",
+        data_label: str = "",
         css: str = "",
     ) -> None:
         super().__init__()
@@ -110,11 +152,29 @@ class Glyph(App):
         self._model = None
         self._labels_map = {}
         self._model_loader_config = None
+        self._memmap_path = memmap_path
+        self._memmap_frames = memmap_frames
+        self._data_task = data_task
+        self._data_label = data_label
+        self._eeg_memmap: np.memmap | None = None
+        self._labels_memmap: np.memmap | None = None
+        self._memmap_index = 0
+        self._buffer_size = getattr(self._streamer.buffer, "buffer_size", None)
+        self._filter = StreamingSOSFilter(
+            filter_configs, self._streamer.sampling_rate, len(self._channel_names)
+        )
         if model_loader_config_path:
             logger.info("Loading model from {}", model_loader_config_path)
             with open(model_loader_config_path, "r", encoding="utf-8") as file:
                 self._model_loader_config = ModelLoaderConfig(**json.load(file))
             self._model, self._model_config = load_model(self._model_loader_config)
+        if self._memmap_path and self._buffer_size is not None:
+            self._initialize_memmaps(len(self._channel_names))
+        elif self._memmap_path:
+            logger.warning(
+                "Memmap path {} ignored because buffer size could not be determined.",
+                self._memmap_path,
+            )
         self._model_details_panel = ModelDetailsPanel(self._model)
         self._model_probs_panel = ModelProbsPlot(
             self._model, self._model_config.labels_map
@@ -129,6 +189,51 @@ class Glyph(App):
             value=("auto" if self._ylim_uv is None else str(int(self._ylim_uv))),
             id="ylim-select",
         )
+
+    def _initialize_memmaps(self, num_channels: int) -> None:
+        assert self._buffer_size is not None
+        eeg_path = f"{self._memmap_path}_eeg.npy"
+        labels_path = f"{self._memmap_path}_labels.npy"
+        try:
+            self._eeg_memmap = open_memmap(
+                eeg_path,
+                dtype=np.float32,
+                mode="w+",
+                shape=(
+                    self._memmap_frames,
+                    num_channels,
+                    self._buffer_size,
+                ),
+            )
+            logger.info(
+                "Initialized EEG memmap at {} with shape ({}, {}, {}).",
+                eeg_path,
+                self._memmap_frames,
+                num_channels,
+                self._buffer_size,
+            )
+            max_label_chars = max(16, len(self._data_task), len(self._data_label), 1)
+            label_dtype = np.dtype(f"U{max_label_chars}")
+            self._labels_memmap = open_memmap(
+                labels_path,
+                dtype=label_dtype,
+                mode="w+",
+                shape=(self._memmap_frames, 2),
+            )
+            self._labels_memmap[:, 0] = self._data_task
+            self._labels_memmap[:, 1] = self._data_label
+            self._labels_memmap.flush()
+            logger.info(
+                "Initialized label memmap at {} with shape ({}, 2).",
+                labels_path,
+                self._memmap_frames,
+            )
+        except (OSError, ValueError) as exc:
+            logger.error(
+                "Failed to create memmap files at base {}: {}", self._memmap_path, exc
+            )
+            self._eeg_memmap = None
+            self._labels_memmap = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -166,10 +271,8 @@ class Glyph(App):
         # Index 0 is a sample index.
         # Indexes num_channels + [2-4] are accelerometer data.
         eeg_data = self._streamer.buffer.get_eeg()
-        plot_data = per_channel_detrend(eeg_data, self._streamer.sampling_rate)
-        eeg_data = per_channel_mains_bandstop(eeg_data, self._streamer.sampling_rate)
-        plot_data = per_channel_mains_bandstop(plot_data, self._streamer.sampling_rate)
-        for idx, row in enumerate(plot_data):
+        eeg_data = self._filter.process(eeg_data)
+        for idx, row in enumerate(eeg_data):
             self._timeseries[idx].post(row)
 
         # Update health metrics panel; show waiting progress until ready.
@@ -192,6 +295,7 @@ class Glyph(App):
 
         # Run model inference if model is loaded
         if self._model is not None:
+            self._write_memmap_frame(eeg_data)
             device = self._model_loader_config.device
             channel_signals = torch.tensor(
                 eeg_data, device=device, dtype=torch.float32
@@ -225,10 +329,37 @@ class Glyph(App):
             probs_np = probs.cpu().detach().numpy().squeeze()
             self._model_probs_panel.update_probabilities(probs_np)
 
+    def _write_memmap_frame(self, eeg_frame: np.ndarray) -> None:
+        if self._eeg_memmap is None:
+            return
+        expected_shape = self._eeg_memmap[self._memmap_index].shape
+        if eeg_frame.shape != expected_shape:
+            logger.warning(
+                "Skipping memmap write because frame shape {} does not match expected {}.",
+                eeg_frame.shape,
+                expected_shape,
+            )
+            return
+        np.copyto(
+            self._eeg_memmap[self._memmap_index],
+            eeg_frame.astype(np.float32, copy=False),
+            casting="unsafe",
+        )
+        self._eeg_memmap.flush()
+        if self._labels_memmap is not None:
+            self._labels_memmap[self._memmap_index, 0] = self._data_task
+            self._labels_memmap[self._memmap_index, 1] = self._data_label
+            self._labels_memmap.flush()
+        self._memmap_index = (self._memmap_index + 1) % self._memmap_frames
+
     async def on_shutdown(self) -> None:
         if self._refresh_timer is not None:
             self._refresh_timer.stop()
         self._streamer.request_stop()
+        if self._eeg_memmap is not None:
+            self._eeg_memmap.flush()
+        if self._labels_memmap is not None:
+            self._labels_memmap.flush()
 
     def action_quit(self) -> None:
         self.exit()
@@ -321,6 +452,11 @@ def main() -> int:
             montage=montage,
             board_details=board_details,
             model_loader_config_path=args.model_loader_config_path,
+            memmap_path=args.memmap_path,
+            memmap_frames=args.memmap_frames,
+            filter_configs=config.filter_configs,
+            data_task=args.data_task,
+            data_label=args.data_label,
             css=css,
         )
         app.run()
