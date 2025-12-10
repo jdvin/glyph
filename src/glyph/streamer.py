@@ -23,41 +23,31 @@ class ChannelDataBuffer:
         self.buffer_size = buffer_size
         self.buffer = np.zeros((num_channels, buffer_size), dtype=np.float64)
         self.filled = 0
+        self._write_idx = 0
 
     def push(self, chunk: np.ndarray):
         assert (
             chunk.ndim == 2 and chunk.shape[0] == self.num_channels
         ), f"Expected ({self.num_channels},{chunk.shape[1]}) shape, got {chunk.shape}"
         T = chunk.shape[1]
+        if T == 0:
+            return
         if T >= self.buffer_size:
-            self.buffer[:, :] = chunk[:, -self.buffer_size :]
-            self.filled = self.buffer_size
-        else:
-            keep = max(0, self.buffer_size - T)
-            if self.filled < self.buffer_size:
-                # fill up from the left with zeros until buffer is full
-                pad = self.buffer_size - self.filled
-                if T >= pad:
-                    # shift existing
-                    self.buffer[:, :-T] = self.buffer[:, T:]
-                    self.buffer[:, -T:] = chunk
-                    self.filled = min(self.buffer_size, self.filled + T)
-                else:
-                    # write into the rightmost T; no shift needed yet
-                    self.buffer[
-                        :,
-                        self.buffer_size - self.filled - T : self.buffer_size
-                        - self.filled,
-                    ] = 0.0
-                    self.buffer[
-                        :, -self.filled - T : -self.filled if self.filled else None
-                    ] = chunk
-                    self.filled += T
-            else:
-                # steady-state: shift left, append new chunk
-                self.buffer[:, :keep] = self.buffer[:, -keep:]
-                self.buffer[:, -T:] = chunk
-                self.filled = self.buffer_size
+            chunk = chunk[:, -self.buffer_size :]
+            T = self.buffer_size
+
+        # Write into the circular buffer, handling wrap-around explicitly.
+        first = min(T, self.buffer_size - self._write_idx)
+        if first > 0:
+            self.buffer[
+                :, self._write_idx : self._write_idx + first
+            ] = chunk[:, :first]
+        remaining = T - first
+        if remaining > 0:
+            self.buffer[:, :remaining] = chunk[:, first : first + remaining]
+
+        self._write_idx = (self._write_idx + T) % self.buffer_size
+        self.filled = min(self.buffer_size, self.filled + T)
 
     def ready(self, T: int | None = None) -> bool:
         return self.prop_filled(T) == 1
@@ -66,10 +56,29 @@ class ChannelDataBuffer:
         return self.filled / (T or self.buffer_size)
 
     def get(self, T: int | None = None) -> np.ndarray:
-        return self.buffer[:, -(T or self.buffer_size) :].copy()
+        length = T or self.buffer_size
+        result = np.zeros((self.num_channels, length), dtype=self.buffer.dtype)
+        available = min(length, self.filled)
+        if available == 0:
+            return result
+
+        recent = self._get_last_samples(available)
+        result[:, -available:] = recent
+        return result
 
     def get_eeg(self, T: int | None = None) -> np.ndarray:
         return self.get(T)[self.eeg_channels, :]
+
+    def _get_last_samples(self, count: int) -> np.ndarray:
+        assert 0 < count <= self.filled
+        end = self._write_idx
+        start = (end - count) % self.buffer_size
+        if start < end:
+            return self.buffer[:, start:end].copy()
+        # Wrap-around: concatenate the tail and head slices
+        return np.hstack(
+            (self.buffer[:, start:].copy(), self.buffer[:, :end].copy())
+        )
 
 
 class ChannelHealthMeter:

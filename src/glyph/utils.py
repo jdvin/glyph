@@ -121,7 +121,7 @@ class StreamingSOSFilter:
         y = x.copy()
         for i in range(len(self.sos)):
             y, self.zi[i] = signal.sosfilt(self.sos[i], y, zi=self.zi[i], axis=-1)
-        return x
+        return y
 
 
 def load_app_config(config_path: Optional[str] = None) -> AppConfig:
@@ -306,6 +306,10 @@ def load_model(
     return model, model_config
 
 
-def per_channel_normalize(x: torch.Tensor) -> torch.Tensor:
+def per_channel_median_shift(x: np.ndarray) -> np.ndarray:
     """Normalize each channel of a tensor independently."""
-    return (x - x.mean(dim=-1, keepdim=True)) / x.std(dim=-1, keepdim=True)
+    return x - np.median(x, axis=-1, keepdims=True)
+
+
+def per_channel_normalize(x: np.ndarray) -> np.ndarray:
+    return (x - x.mean(axis=-1, keepdims=True)) / x.mean(axis=-1, keepdims=True)

@@ -42,6 +42,7 @@ from .utils import (
     load_css,
     format_board_name,
     load_model,
+    per_channel_median_shift,
     per_channel_normalize,
     StreamingSOSFilter,
 )
@@ -163,11 +164,17 @@ class Glyph(App):
         self._filter = StreamingSOSFilter(
             filter_configs, self._streamer.sampling_rate, len(self._channel_names)
         )
+        self._model = None
+        self._model_config = None
         if model_loader_config_path:
             logger.info("Loading model from {}", model_loader_config_path)
             with open(model_loader_config_path, "r", encoding="utf-8") as file:
                 self._model_loader_config = ModelLoaderConfig(**json.load(file))
             self._model, self._model_config = load_model(self._model_loader_config)
+        self._model_details_panel = ModelDetailsPanel(self._model)
+        self._model_probs_panel = ModelProbsPlot(
+            self._model, self._model_config.labels_map if self._model_config else {}
+        )
         if self._memmap_path and self._buffer_size is not None:
             self._initialize_memmaps(len(self._channel_names))
         elif self._memmap_path:
@@ -175,10 +182,7 @@ class Glyph(App):
                 "Memmap path {} ignored because buffer size could not be determined.",
                 self._memmap_path,
             )
-        self._model_details_panel = ModelDetailsPanel(self._model)
-        self._model_probs_panel = ModelProbsPlot(
-            self._model, self._model_config.labels_map
-        )
+
         self._ts_scale = Select(
             options=[
                 ("200 µV", "200"),
@@ -272,7 +276,8 @@ class Glyph(App):
         # Indexes num_channels + [2-4] are accelerometer data.
         eeg_data = self._streamer.buffer.get_eeg()
         eeg_data = self._filter.process(eeg_data)
-        for idx, row in enumerate(eeg_data):
+
+        for idx, row in enumerate(per_channel_median_shift(eeg_data)):
             self._timeseries[idx].post(row)
 
         # Update health metrics panel; show waiting progress until ready.
@@ -292,13 +297,12 @@ class Glyph(App):
             raise e
 
         self._channel_map.update_values(scores)
-
+        self._write_memmap_frame(eeg_data)
         # Run model inference if model is loaded
         if self._model is not None:
-            self._write_memmap_frame(eeg_data)
             device = self._model_loader_config.device
             channel_signals = torch.tensor(
-                eeg_data, device=device, dtype=torch.float32
+                per_channel_normalize(eeg_data), device=device, dtype=torch.float32
             ).unsqueeze(0)
             channel_positions = torch.tensor(
                 self._montage.channel_positions, device=device, dtype=torch.float32
@@ -314,7 +318,7 @@ class Glyph(App):
             labels = torch.tensor([0], device=device)
             samples_mask = torch.ones_like(sequence_positions)
             _, logits, _ = self._model(
-                per_channel_normalize(channel_signals),
+                channel_signals,
                 channel_positions,
                 sequence_positions,
                 task_keys,
