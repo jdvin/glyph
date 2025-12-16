@@ -16,7 +16,6 @@ from brainflow.board_shim import (
 from loguru import logger
 import numpy as np
 from serial.tools import list_ports
-import torch
 from torch import nn
 from torch.package.package_importer import PackageImporter
 from scipy import signal
@@ -109,19 +108,24 @@ class StreamingSOSFilter:
             signal.butter(4, fc.bounds, btype=fc.btype.value, fs=fs, output="sos")
             for fc in filter_configs
         ]
-        zi_base = [signal.sosfilt_zi(sos_i) for sos_i in self.sos]  # (n_sections, 2)
-        # add channel dimension
-        self.zi = [
-            np.repeat(zi_base[:, np.newaxis, :], n_channels, axis=-2)
-            for zi_base in zi_base
+        zi_sections = [signal.sosfilt_zi(sos_i) for sos_i in self.sos]
+        self._zi_template = [
+            np.repeat(zi[:, np.newaxis, :], n_channels, axis=1)
+            for zi in zi_sections
         ]
+        self.reset()
 
     def process(self, x: np.ndarray) -> np.ndarray:
-        # x shape: (n_channels, n_samples)
+        if not self.sos or x.shape[-1] == 0:
+            return x
         y = x.copy()
-        for i in range(len(self.sos)):
-            y, self.zi[i] = signal.sosfilt(self.sos[i], y, zi=self.zi[i], axis=-1)
+        for i, sos in enumerate(self.sos):
+            y, self.zi[i] = signal.sosfilt(sos, y, zi=self.zi[i], axis=-1)
         return y
+
+    def reset(self) -> None:
+        """Reset the internal filter state (for discontinuities)."""
+        self.zi = [template.copy() for template in self._zi_template]
 
 
 def load_app_config(config_path: Optional[str] = None) -> AppConfig:
@@ -308,8 +312,10 @@ def load_model(
 
 def per_channel_median_shift(x: np.ndarray) -> np.ndarray:
     """Normalize each channel of a tensor independently."""
+    return x
     return x - np.median(x, axis=-1, keepdims=True)
 
 
 def per_channel_normalize(x: np.ndarray) -> np.ndarray:
+    return x
     return (x - x.mean(axis=-1, keepdims=True)) / x.mean(axis=-1, keepdims=True)

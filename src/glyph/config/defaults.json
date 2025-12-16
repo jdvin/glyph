@@ -1,5 +1,5 @@
 {
-  "buffer_size": 625,
+  "buffer_size": 7500,
   "poll_interval": 0.05,
   "window_size": 125,
   "refresh_interval": 0.05,

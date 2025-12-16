@@ -24,6 +24,7 @@ class ChannelDataBuffer:
         self.buffer = np.zeros((num_channels, buffer_size), dtype=np.float64)
         self.filled = 0
         self._write_idx = 0
+        self._total_written = 0
 
     def push(self, chunk: np.ndarray):
         assert (
@@ -39,15 +40,14 @@ class ChannelDataBuffer:
         # Write into the circular buffer, handling wrap-around explicitly.
         first = min(T, self.buffer_size - self._write_idx)
         if first > 0:
-            self.buffer[
-                :, self._write_idx : self._write_idx + first
-            ] = chunk[:, :first]
+            self.buffer[:, self._write_idx : self._write_idx + first] = chunk[:, :first]
         remaining = T - first
         if remaining > 0:
             self.buffer[:, :remaining] = chunk[:, first : first + remaining]
 
         self._write_idx = (self._write_idx + T) % self.buffer_size
         self.filled = min(self.buffer_size, self.filled + T)
+        self._total_written += T
 
     def ready(self, T: int | None = None) -> bool:
         return self.prop_filled(T) == 1
@@ -69,6 +69,41 @@ class ChannelDataBuffer:
     def get_eeg(self, T: int | None = None) -> np.ndarray:
         return self.get(T)[self.eeg_channels, :]
 
+    def get_eeg_since(self, start_total: int) -> tuple[np.ndarray, int, bool]:
+        """
+        Return EEG samples that arrived after `start_total`.
+
+        Args:
+            start_total: Global sample index (monotonic) that marks the last
+                processed sample. Samples that were overwritten before this
+                index are skipped automatically.
+
+        Returns:
+            A tuple of (chunk, new_total, dropped) where:
+              - chunk has shape (len(eeg_channels), T_new)
+              - new_total is the latest total sample count
+              - dropped is True if older samples were no longer available
+        """
+        chunk, new_total, dropped = self._get_new_samples(start_total)
+        return chunk[self.eeg_channels, :], new_total, dropped
+
+    def _get_new_samples(
+        self, start_total: int
+    ) -> tuple[np.ndarray, int, bool]:
+        """Internal helper that returns raw channel data since a sample index."""
+        current_total = self._total_written
+        available_start = current_total - self.filled
+        dropped = start_total < available_start
+        start = max(start_total, available_start)
+        new_count = current_total - start
+        if new_count <= 0:
+            empty = np.zeros(
+                (self.num_channels, 0), dtype=self.buffer.dtype
+            )
+            return empty, current_total, dropped
+        recent = self._get_last_samples(new_count)
+        return recent, current_total, dropped
+
     def _get_last_samples(self, count: int) -> np.ndarray:
         assert 0 < count <= self.filled
         end = self._write_idx
@@ -76,9 +111,12 @@ class ChannelDataBuffer:
         if start < end:
             return self.buffer[:, start:end].copy()
         # Wrap-around: concatenate the tail and head slices
-        return np.hstack(
-            (self.buffer[:, start:].copy(), self.buffer[:, :end].copy())
-        )
+        return np.hstack((self.buffer[:, start:].copy(), self.buffer[:, :end].copy()))
+
+    @property
+    def total_samples_written(self) -> int:
+        """Total number of samples that have been pushed into the buffer."""
+        return self._total_written
 
 
 class ChannelHealthMeter:
@@ -94,7 +132,7 @@ class ChannelHealthMeter:
         self,
         n_channels: int,
         fs: float,
-        window_sec: float = 5.0,
+        window_sec: float,
         mains_hz: float = 50.0,  # 60.0 in some regions
         hum_band_hz: float = 1.0,  # +/- width around mains & first harmonic
         brain_band: tuple = (1.0, 45.0),
@@ -305,7 +343,7 @@ class BrainFlowStreamer:
         self.health_metrics = ChannelHealthMeter(
             len(self._eeg_channels),
             self.sampling_rate,
-            window_sec=5.0,
+            window_sec=buffer_size / self.sampling_rate,
         )
 
     def start(self) -> None:

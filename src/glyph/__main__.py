@@ -30,7 +30,12 @@ from .plot import (
     ModelDetailsPanel,
     ModelProbsPlot,
 )
-from .streamer import BrainFlowStreamer, MockEEGStreamer, StreamerProtocol
+from .streamer import (
+    BrainFlowStreamer,
+    ChannelDataBuffer,
+    MockEEGStreamer,
+    StreamerProtocol,
+)
 from .utils import (
     AppConfig,
     FilterConfig,
@@ -138,6 +143,10 @@ class Glyph(App):
         self._streamer = streamer
         self._channel_indices = channel_indices
         self._channel_names = channel_names
+        self._filtered_channel_count = len(self._channel_names)
+        self._filtered_channel_indices = list(
+            range(self._filtered_channel_count)
+        )
         self._montage = montage
         self._refresh_interval = refresh_interval
         self._ylim_uv = None
@@ -164,6 +173,18 @@ class Glyph(App):
         self._filter = StreamingSOSFilter(
             filter_configs, self._streamer.sampling_rate, len(self._channel_names)
         )
+        self._filtered_buffer: ChannelDataBuffer | None = None
+        self._last_filtered_sample = 0
+        if self._buffer_size is not None:
+            self._filtered_buffer = ChannelDataBuffer(
+                self._filtered_channel_count,
+                self._filtered_channel_indices,
+                self._buffer_size,
+            )
+        else:
+            logger.warning(
+                "Streaming buffer size unavailable; filtering will reprocess the entire window."
+            )
         self._model = None
         self._model_config = None
         if model_loader_config_path:
@@ -239,6 +260,29 @@ class Glyph(App):
             self._eeg_memmap = None
             self._labels_memmap = None
 
+    def _get_filtered_eeg(self) -> np.ndarray:
+        """Return the latest filtered EEG window, filtering only newly arrived samples."""
+        buffer = self._streamer.buffer
+        if self._filtered_buffer is None or not hasattr(
+            buffer, "get_eeg_since"
+        ):
+            raw_window = buffer.get_eeg()
+            return self._filter.process(raw_window)
+
+        chunk, total, dropped = buffer.get_eeg_since(self._last_filtered_sample)
+        if dropped:
+            self._filter.reset()
+            self._filtered_buffer = ChannelDataBuffer(
+                self._filtered_channel_count,
+                self._filtered_channel_indices,
+                self._buffer_size,
+            )
+        if chunk.size:
+            filtered_chunk = self._filter.process(chunk)
+            self._filtered_buffer.push(filtered_chunk)
+            self._last_filtered_sample = total
+        return self._filtered_buffer.get()
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with TabbedContent():
@@ -274,8 +318,7 @@ class Glyph(App):
         # BrainFlow returns a [num_channels + 3 x num_samples] array.
         # Index 0 is a sample index.
         # Indexes num_channels + [2-4] are accelerometer data.
-        eeg_data = self._streamer.buffer.get_eeg()
-        eeg_data = self._filter.process(eeg_data)
+        eeg_data = self._get_filtered_eeg()
 
         for idx, row in enumerate(per_channel_median_shift(eeg_data)):
             self._timeseries[idx].post(row)
