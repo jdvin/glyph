@@ -1,7 +1,7 @@
 import os
 import threading
 import time
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Sequence
 
 import numpy as np
 from brainflow.board_shim import BoardShim, BrainFlowError
@@ -87,9 +87,7 @@ class ChannelDataBuffer:
         chunk, new_total, dropped = self._get_new_samples(start_total)
         return chunk[self.eeg_channels, :], new_total, dropped
 
-    def _get_new_samples(
-        self, start_total: int
-    ) -> tuple[np.ndarray, int, bool]:
+    def _get_new_samples(self, start_total: int) -> tuple[np.ndarray, int, bool]:
         """Internal helper that returns raw channel data since a sample index."""
         current_total = self._total_written
         available_start = current_total - self.filled
@@ -97,9 +95,7 @@ class ChannelDataBuffer:
         start = max(start_total, available_start)
         new_count = current_total - start
         if new_count <= 0:
-            empty = np.zeros(
-                (self.num_channels, 0), dtype=self.buffer.dtype
-            )
+            empty = np.zeros((self.num_channels, 0), dtype=self.buffer.dtype)
             return empty, current_total, dropped
         recent = self._get_last_samples(new_count)
         return recent, current_total, dropped
@@ -320,6 +316,21 @@ class StreamerProtocol(Protocol):
     def close(self) -> None: ...
 
 
+# Cyton/Cyton-Daisy “channel settings” command format:
+#   x <ch> <power> <gain> <input> <bias> <srb2> <srb1> X
+# where ch is "1".."8" and for Daisy extension "Q,W,E,R,T,Y,U,I" == 9..16.   [oai_citation:0‡OpenBCI Documentation](https://docs.openbci.com/Cyton/CytonSDK/?utm_source=chatgpt.com)
+_DAISY_CH_MAP = {
+    9: "Q",
+    10: "W",
+    11: "E",
+    12: "R",
+    13: "T",
+    14: "Y",
+    15: "U",
+    16: "I",
+}
+
+
 class BrainFlowStreamer:
     """Background thread that feeds BrainFlow data into a queue for the UI."""
 
@@ -371,6 +382,7 @@ class BrainFlowStreamer:
             finally:
                 logger.info("BrainFlow streaming thread stopped.")
 
+        self.apply_thinkpulse_settings()
         self._thread = threading.Thread(
             target=_run, name="BrainFlowStreamer", daemon=True
         )
@@ -392,6 +404,37 @@ class BrainFlowStreamer:
                 self._board.release_session()
             except BrainFlowError as err:
                 logger.warning("Failed to release BrainFlow session: {}", err)
+
+    def apply_thinkpulse_settings(self) -> None:
+        """
+        Apply ThinkPulse-recommended Cyton/Cyton-Daisy per-channel settings:
+
+          - PGA gain: 8x      -> gain_set = 4
+          - Input type: Normal -> input_type_set = 0
+          - Bias include: No   -> bias_set = 0
+          - SRB2: On           -> srb2_set = 1
+          - SRB1: Off          -> srb1_set = 0
+          - Power down: No     -> power_down = 0
+
+        If `channels` is provided, applies only to those 1-indexed EEG channels.
+        Otherwise applies to 1..n_eeg_channels.
+        """
+        # constants per the Cyton channel command table   [oai_citation:1‡GitHub](https://github.com/marles77/openbci-brainflow-lsl?utm_source=chatgpt.com)
+        power_down = 0
+        gain_set = 4  # 8x
+        input_type_set = 0  # normal
+        bias_set = 0  # bias include: no
+        srb2_set = 1  # on
+        srb1_set = 0  # off
+
+        for ch in self._eeg_channels:
+            if not (1 <= ch <= 16):
+                raise ValueError(f"Channel must be in [1, 16], got {ch}")
+
+            ch_id = str(ch) if ch <= 8 else _DAISY_CH_MAP[ch]
+
+            cmd = f"x{ch_id}{power_down}{gain_set}{input_type_set}{bias_set}{srb2_set}{srb1_set}X"
+            self._board.config_board(cmd)
 
 
 class MockEEGStreamer:

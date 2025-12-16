@@ -110,8 +110,7 @@ class StreamingSOSFilter:
         ]
         zi_sections = [signal.sosfilt_zi(sos_i) for sos_i in self.sos]
         self._zi_template = [
-            np.repeat(zi[:, np.newaxis, :], n_channels, axis=1)
-            for zi in zi_sections
+            np.repeat(zi[:, np.newaxis, :], n_channels, axis=1) for zi in zi_sections
         ]
         self.reset()
 
